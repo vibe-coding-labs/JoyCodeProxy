@@ -89,7 +89,7 @@ type sseContentBlockDelta struct {
 
 type deltaText struct {
 	Type string `json:"type"`
-	Text string `json:"text"`
+	Text string `json:"text,omitempty"`
 }
 
 type sseContentBlockStop struct {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 )
@@ -97,64 +96,143 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 	FormatSSE(w, "message_start", sseMessageStart{
 		Type: "message_start",
 		Message: MessageResponse{
-			ID:      msgID,
-			Type:    "message",
-			Role:    "assistant",
-			Model:   model,
-			Content: []ContentBlock{},
-			Usage:   Usage{},
+			ID: msgID, Type: "message", Role: "assistant",
+			Model: model, Content: []ContentBlock{}, Usage: Usage{},
 		},
 	})
 	FormatSSE(w, "ping", ssePing{Type: "ping"})
 	flusher.Flush()
 
-	// content_block_start
-	FormatSSE(w, "content_block_start", sseContentBlockStart{
-		Type:         "content_block_start",
-		Index:        0,
-		ContentBlock: ContentBlock{Type: "text", Text: ""},
-	})
-	flusher.Flush()
+	// Track in-progress tool calls: index -> accumulated data
+	type toolCallAccum struct {
+		ID        string
+		Name      string
+		Arguments string
+	}
+	toolCalls := make(map[int]*toolCallAccum)
+	currentBlockIndex := 0
+	textBlockStarted := false
+	toolBlockStarted := map[int]bool{}
 
-	// Stream content deltas from JoyCode SSE
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		chunk := ParseStreamChunk(line)
+		if chunk == nil || len(chunk.Choices) == 0 {
 			continue
 		}
-		text := ParseStreamDelta(line)
-		if text == "" {
-			continue
+		choice := chunk.Choices[0]
+
+		// Process tool_calls deltas
+		for _, tc := range choice.Delta.ToolCalls {
+			idx := tc.Index
+			if _, exists := toolCalls[idx]; !exists {
+				toolCalls[idx] = &toolCallAccum{
+					ID:   tc.ID,
+					Name: tc.Function.Name,
+				}
+			}
+			if tc.ID != "" {
+				toolCalls[idx].ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				toolCalls[idx].Name = tc.Function.Name
+			}
+			toolCalls[idx].Arguments += tc.Function.Arguments
+
+			if !toolBlockStarted[idx] {
+				// End text block if it was started
+				if textBlockStarted {
+					FormatSSE(w, "content_block_stop", sseContentBlockStop{
+						Type: "content_block_stop", Index: currentBlockIndex,
+					})
+					currentBlockIndex++
+					textBlockStarted = false
+				}
+				toolBlockStarted[idx] = true
+				tcID := toolCalls[idx].ID
+				if tcID == "" {
+					tcID = "toolu_" + newID()
+				}
+				FormatSSE(w, "content_block_start", sseContentBlockStart{
+					Type:  "content_block_start",
+					Index: currentBlockIndex,
+					ContentBlock: ContentBlock{
+						Type: "tool_use",
+						ID:   tcID,
+						Name: toolCalls[idx].Name,
+					},
+				})
+				flusher.Flush()
+			}
 		}
-		totalOutput += len(text)
-		FormatSSE(w, "content_block_delta", sseContentBlockDelta{
-			Type:  "content_block_delta",
-			Index: 0,
-			Delta: deltaText{Type: "text_delta", Text: text},
-		})
-		flusher.Flush()
+
+		// Process text content
+		text := choice.Delta.Content
+		if text != "" {
+			if !textBlockStarted {
+				textBlockStarted = true
+				FormatSSE(w, "content_block_start", sseContentBlockStart{
+					Type:         "content_block_start",
+					Index:        currentBlockIndex,
+					ContentBlock: ContentBlock{Type: "text", Text: ""},
+				})
+				flusher.Flush()
+			}
+			totalOutput += len(text)
+			FormatSSE(w, "content_block_delta", sseContentBlockDelta{
+				Type:  "content_block_delta",
+				Index: currentBlockIndex,
+				Delta: deltaText{Type: "text_delta", Text: text},
+			})
+			flusher.Flush()
+		}
+
+		// Handle finish
+		if choice.FinishReason != nil {
+			fr := *choice.FinishReason
+			// Close any open text block
+			if textBlockStarted {
+				FormatSSE(w, "content_block_stop", sseContentBlockStop{
+					Type: "content_block_stop", Index: currentBlockIndex,
+				})
+				currentBlockIndex++
+				textBlockStarted = false
+			}
+			// Close and flush tool call blocks with input_json_delta
+			for i := 0; i < len(toolCalls); i++ {
+				tc := toolCalls[i]
+				if toolBlockStarted[i] {
+					// Send the accumulated arguments as input_json_delta
+					FormatSSE(w, "content_block_delta", sseContentBlockDelta{
+						Type:  "content_block_delta",
+						Index: currentBlockIndex,
+						Delta: deltaText{Type: "input_json_delta", Text: tc.Arguments},
+					})
+					FormatSSE(w, "content_block_stop", sseContentBlockStop{
+						Type: "content_block_stop", Index: currentBlockIndex,
+					})
+					currentBlockIndex++
+				}
+			}
+
+			stopReason := "end_turn"
+			if fr == "tool_calls" {
+				stopReason = "tool_use"
+			}
+
+			FormatSSE(w, "message_delta", sseMessageDelta{
+				Type:  "message_delta",
+				Delta: deltaStop{StopReason: stopReason},
+				Usage: struct {
+					OutputTokens int `json:"output_tokens"`
+				}{OutputTokens: totalOutput / 4},
+			})
+			FormatSSE(w, "message_stop", sseMessageStop{Type: "message_stop"})
+			flusher.Flush()
+		}
 	}
-
-	// content_block_stop
-	FormatSSE(w, "content_block_stop", sseContentBlockStop{
-		Type: "content_block_stop", Index: 0,
-	})
-	flusher.Flush()
-
-	// message_delta
-	FormatSSE(w, "message_delta", sseMessageDelta{
-		Type:  "message_delta",
-		Delta: deltaStop{StopReason: "end_turn"},
-		Usage: struct {
-			OutputTokens int `json:"output_tokens"`
-		}{OutputTokens: totalOutput / 4},
-	})
-
-	// message_stop
-	FormatSSE(w, "message_stop", sseMessageStop{Type: "message_stop"})
-	flusher.Flush()
 }
 
 func writeAnthropicJSON(w http.ResponseWriter, code int, v interface{}) {
