@@ -11,7 +11,8 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "JoyCode/2.4.5 Chrome/133.0.0.0 Electron/35.2.0 Safari/537.36"
 )
-TIMEOUT = 120.0
+TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
+MAX_RETRIES = 3
 
 MODELS = [
     "JoyAI-Code",
@@ -36,7 +37,16 @@ class Client:
         self.pt_key = pt_key
         self.user_id = user_id
         self.session_id = _hex_id()
-        self._http = httpx.Client(timeout=TIMEOUT)
+        transport = httpx.HTTPTransport(retries=MAX_RETRIES)
+        self._http = httpx.Client(
+            timeout=TIMEOUT,
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=60,
+            ),
+            transport=transport,
+        )
 
     def _headers(self) -> Dict[str, str]:
         return {
