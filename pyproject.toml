@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28",
     "click>=8.2",
     "sse-starlette>=2.2",
+    "rich>=13.7",
 ]
 
 [project.optional-dependencies]
