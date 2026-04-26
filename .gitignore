@@ -6,19 +6,49 @@
 *.dylib
 /JoyCodeProxy
 
+# Go build cache
+*.test
+*.out
+debug
+
 # Build output
 bin/
 dist/
+out/
+
+# Dependency directories
+vendor/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Test & coverage
+coverage.txt
+coverage.html
+coverage.out
+*.coverprofile
 
 # Claude Code
 .claude/
+
+# Docker
+.docker/
