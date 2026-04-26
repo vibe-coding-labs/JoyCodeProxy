@@ -57,25 +57,115 @@ def resolve_model(model: str) -> str:
 def parse_content(raw: Any) -> str:
     """Extract plain-text from an Anthropic message *content* field.
 
-    The value may be:
-    - a plain string
-    - a list of content blocks (dicts with ``type`` / ``text``)
-    - anything else -> fall back to ``str()``
+    Backward-compatible: plain string -> string, list -> joined text.
     """
     if isinstance(raw, str):
         return raw
     if isinstance(raw, list):
         parts: List[str] = []
         for block in raw:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif block.get("type") == "tool_result":
+                    rc = block.get("content", "")
+                    if isinstance(rc, list):
+                        for sub in rc:
+                            if isinstance(sub, dict) and sub.get("type") == "text":
+                                parts.append(sub.get("text", ""))
+                    elif isinstance(rc, str):
+                        parts.append(rc)
         return "\n".join(parts)
     if raw is None:
         return ""
-    # Fallback: treat as raw JSON string
     if isinstance(raw, bytes):
         return raw.decode("utf-8", errors="replace")
     return str(raw)
+
+
+def _translate_content_blocks(content: Any) -> Any:
+    """Translate Anthropic content blocks to OpenAI-compatible format."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content) if content is not None else ""
+
+    parts: List[Any] = []
+    has_non_text = False
+
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type", "")
+
+        if btype == "text":
+            parts.append({"type": "text", "text": block.get("text", "")})
+        elif btype == "image":
+            source = block.get("source", {})
+            if source.get("type") == "base64":
+                data_url = "data:{};base64,{}".format(
+                    source.get("media_type", "image/png"),
+                    source.get("data", ""),
+                )
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_url},
+                })
+                has_non_text = True
+            else:
+                url = source.get("url", "")
+                if url:
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": url},
+                    })
+                    has_non_text = True
+        elif btype == "tool_result":
+            rc = block.get("content", "")
+            text = ""
+            if isinstance(rc, list):
+                texts = [
+                    s.get("text", "") for s in rc
+                    if isinstance(s, dict) and s.get("type") == "text"
+                ]
+                text = "\n".join(texts)
+            elif isinstance(rc, str):
+                text = rc
+            parts.append({"type": "text", "text": text or "Tool executed successfully"})
+            has_non_text = True
+        elif btype == "tool_use":
+            fn_input = block.get("input", {})
+            if isinstance(fn_input, dict):
+                text = json.dumps(fn_input, ensure_ascii=False)
+            else:
+                text = str(fn_input)
+            parts.append({"type": "text", "text": text})
+            has_non_text = True
+
+    if not has_non_text:
+        return "\n".join(
+            p.get("text", "") for p in parts if p.get("type") == "text"
+        )
+    return parts
+
+
+def _build_tool_message(tool_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert an Anthropic tool_result block to an OpenAI tool message."""
+    rc = tool_result.get("content", "")
+    text = ""
+    if isinstance(rc, list):
+        texts = [
+            s.get("text", "") for s in rc
+            if isinstance(s, dict) and s.get("type") == "text"
+        ]
+        text = "\n".join(texts)
+    elif isinstance(rc, str):
+        text = rc
+    return {
+        "role": "tool",
+        "tool_call_id": tool_result.get("tool_use_id", ""),
+        "content": text or "Tool executed successfully",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -107,10 +197,8 @@ def translate_request(req: Dict[str, Any]) -> Dict[str, Any]:
     """Convert an Anthropic Messages API request body to a JoyCode/OpenAI body."""
     model = resolve_model(req.get("model", ""))
 
-    # Build messages list
     messages: List[Dict[str, Any]] = []
 
-    # Prepend system prompt if present
     system = req.get("system")
     if system is not None:
         sys_text = parse_content(system)
@@ -118,10 +206,58 @@ def translate_request(req: Dict[str, Any]) -> Dict[str, Any]:
             messages.append({"role": "system", "content": sys_text})
 
     for m in req.get("messages", []):
-        messages.append({
-            "role": m.get("role", "user"),
-            "content": parse_content(m.get("content")),
-        })
+        role = m.get("role", "user")
+        raw_content = m.get("content")
+
+        if isinstance(raw_content, list):
+            tool_uses = [b for b in raw_content if isinstance(b, dict) and b.get("type") == "tool_use"]
+            tool_results = [b for b in raw_content if isinstance(b, dict) and b.get("type") == "tool_result"]
+
+            if tool_uses and role == "assistant":
+                text_parts = []
+                for b in raw_content:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        text_parts.append(b.get("text", ""))
+                assistant_msg: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "\n".join(text_parts) if text_parts else None,
+                }
+                openai_tool_calls = []
+                for tu in tool_uses:
+                    tc_id = tu.get("id", "toolu_" + _new_id())
+                    fn_input = tu.get("input", {})
+                    if isinstance(fn_input, dict):
+                        args_str = json.dumps(fn_input, ensure_ascii=False)
+                    else:
+                        args_str = str(fn_input)
+                    openai_tool_calls.append({
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {
+                            "name": tu.get("name", ""),
+                            "arguments": args_str,
+                        },
+                    })
+                assistant_msg["tool_calls"] = openai_tool_calls
+                messages.append(assistant_msg)
+
+                for tr in tool_results:
+                    messages.append(_build_tool_message(tr))
+                continue
+
+            if tool_results and role == "user":
+                for tr in tool_results:
+                    messages.append(_build_tool_message(tr))
+                text_parts = []
+                for b in raw_content:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        text_parts.append(b.get("text", ""))
+                if text_parts:
+                    messages.append({"role": "user", "content": "\n".join(text_parts)})
+                continue
+
+        translated = _translate_content_blocks(raw_content)
+        messages.append({"role": role, "content": translated})
 
     body: Dict[str, Any] = {
         "model": model,
@@ -129,14 +265,12 @@ def translate_request(req: Dict[str, Any]) -> Dict[str, Any]:
         "stream": req.get("stream", False),
     }
 
-    # max_tokens (default 8192 if not set or zero)
     max_tokens = req.get("max_tokens", 0)
     if max_tokens:
         body["max_tokens"] = max_tokens
     else:
         body["max_tokens"] = 8192
 
-    # Optional parameters
     if "temperature" in req and req["temperature"] is not None:
         body["temperature"] = req["temperature"]
     if "top_p" in req and req["top_p"] is not None:
