@@ -21,6 +21,18 @@ const (
 		"JoyCode/2.4.5 Chrome/133.0.0.0 Electron/35.2.0 Safari/537.36"
 )
 
+// Models lists all known JoyCode model IDs available for direct passthrough.
+var Models = []string{
+	"JoyAI-Code",
+	"MiniMax-M2.7",
+	"Kimi-K2.6",
+	"Kimi-K2.5",
+	"GLM-5.1",
+	"GLM-5",
+	"GLM-4.7",
+	"Doubao-Seed-2.0-pro",
+}
+
 // Client is the JoyCode API HTTP client.
 type Client struct {
 	PtKey      string

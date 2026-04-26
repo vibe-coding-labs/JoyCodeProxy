@@ -62,6 +62,12 @@ func resolveModel(model string) string {
 	if m, ok := ModelMapping[model]; ok {
 		return m
 	}
+	// Allow passthrough of known JoyCode model IDs
+	for _, m := range joycode.Models {
+		if m == model {
+			return model
+		}
+	}
 	return joycode.DefaultModel
 }
 
