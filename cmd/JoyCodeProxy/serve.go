@@ -29,8 +29,6 @@ var serveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		log.Printf("Auth OK: userId=%s", client.UserID)
-
 		srv := openai.NewServer(client)
 		anth := anthropic.NewHandler(client)
 		mux := http.NewServeMux()
