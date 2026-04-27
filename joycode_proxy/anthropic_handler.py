@@ -34,11 +34,13 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:24]
 
 
-def resolve_model(model: str) -> str:
+def resolve_model(model: str, account_default_model: str = "") -> str:
     if model in MODEL_MAPPING:
         return MODEL_MAPPING[model]
     if model in MODELS:
         return model
+    if account_default_model:
+        return account_default_model
     return "JoyAI-Code"
 
 
@@ -57,14 +59,14 @@ from litellm.types.utils import ModelResponse, StreamingChoices, Usage
 _adapter = AnthropicAdapter()
 
 
-def _translate_request(anthropic_body: Dict[str, Any]) -> tuple:
+def _translate_request(anthropic_body: Dict[str, Any], account_default_model: str = "") -> tuple:
     """Convert Anthropic Messages API request to OpenAI format using litellm.
 
     Returns (openai_kwargs, tool_name_mapping, joycode_model).
     """
     kwargs = dict(anthropic_body)
     requested_model = kwargs.get("model", "")
-    joycode_model = resolve_model(requested_model)
+    joycode_model = resolve_model(requested_model, account_default_model)
     kwargs["model"] = requested_model
 
     openai_kwargs, tool_name_mapping = _adapter.translate_completion_input_params_with_tool_mapping(
@@ -124,10 +126,10 @@ def _translate_response(jc_resp: Dict[str, Any], requested_model: str, tool_name
 # Streaming handler — uses litellm's AnthropicStreamWrapper
 # ---------------------------------------------------------------------------
 
-async def _handle_stream(client, req: Dict[str, Any]) -> StreamingResponse:
+async def _handle_stream(client, req: Dict[str, Any], account_default_model: str = "") -> StreamingResponse:
     """Produce an SSE StreamingResponse using litellm's AnthropicStreamWrapper."""
 
-    openai_kwargs, tool_name_mapping, requested_model = _translate_request(req)
+    openai_kwargs, tool_name_mapping, requested_model = _translate_request(req, account_default_model)
     openai_kwargs["stream"] = True
     joycode_model = openai_kwargs["model"]
 
@@ -273,19 +275,20 @@ def create_anthropic_router(cred_router: CredentialRouter) -> APIRouter:
     async def handle_messages(request: Request):  # type: ignore[return]
         api_key = request.headers.get("x-api-key", "")
         client = cred_router.get_client(api_key or None)
+        account_default_model = cred_router.get_default_model(api_key or None)
 
         body = await request.json()
-        log.debug("POST /v1/messages model=%s stream=%s tools=%d key=%s",
+        log.debug("POST /v1/messages model=%s stream=%s tools=%d key=%s account_model=%s",
                   body.get("model"), body.get("stream"), len(body.get("tools", [])),
-                  api_key[:8] + "..." if api_key else "default")
+                  api_key[:8] + "..." if api_key else "default", account_default_model)
 
         if not body.get("max_tokens"):
             body["max_tokens"] = 8192
 
         if body.get("stream"):
-            return await _handle_stream(client, body)
+            return await _handle_stream(client, body, account_default_model)
 
-        openai_kwargs, tool_name_mapping, requested_model = _translate_request(body)
+        openai_kwargs, tool_name_mapping, requested_model = _translate_request(body, account_default_model)
         try:
             jc_resp = client.post(CHAT_ENDPOINT, openai_kwargs)
         except Exception as exc:

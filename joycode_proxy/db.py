@@ -51,7 +51,15 @@ class Database:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(SCHEMA)
+            self._migrate_schema()
         return self._conn
+
+    def _migrate_schema(self):
+        """Add columns that were introduced after initial schema."""
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(accounts)").fetchall()]
+        if "default_model" not in cols:
+            self._conn.execute("ALTER TABLE accounts ADD COLUMN default_model TEXT DEFAULT ''")
+            log.info("Added default_model column to accounts table")
 
     def close(self):
         if self._conn:
@@ -60,17 +68,30 @@ class Database:
 
     # -- Account CRUD --
 
-    def add_account(self, api_key: str, pt_key: str, user_id: str, is_default: bool = False):
+    def add_account(self, api_key: str, pt_key: str, user_id: str, is_default: bool = False,
+                    default_model: str = ""):
+        from joycode_proxy.crypto import encrypt
         conn = self._get_conn()
         if is_default:
             conn.execute("UPDATE accounts SET is_default = 0")
+        encrypted_pt_key = encrypt(pt_key)
         conn.execute(
-            "INSERT OR REPLACE INTO accounts (api_key, pt_key, user_id, is_default, updated_at) "
-            "VALUES (?, ?, ?, ?, datetime('now'))",
-            (api_key, pt_key, user_id, 1 if is_default else 0),
+            "INSERT OR REPLACE INTO accounts (api_key, pt_key, user_id, is_default, default_model, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now'))",
+            (api_key, encrypted_pt_key, user_id, 1 if is_default else 0, default_model),
         )
         conn.commit()
-        log.info("Account saved: api_key=%s user_id=%s", api_key, user_id)
+        log.info("Account saved: api_key=%s user_id=%s model=%s", api_key, user_id, default_model)
+
+    def update_account_model(self, api_key: str, default_model: str):
+        """Update the default_model for an account."""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE accounts SET default_model = ?, updated_at = datetime('now') WHERE api_key = ?",
+            (default_model, api_key),
+        )
+        conn.commit()
+        log.info("Updated default_model for %s: %s", api_key, default_model)
 
     def remove_account(self, api_key: str) -> bool:
         conn = self._get_conn()
@@ -81,34 +102,41 @@ class Database:
     def list_accounts(self) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT api_key, user_id, is_default, created_at FROM accounts ORDER BY created_at"
+            "SELECT api_key, user_id, is_default, default_model, created_at FROM accounts ORDER BY created_at"
         ).fetchall()
         return [
             {
                 "api_key": r["api_key"],
                 "user_id": r["user_id"],
                 "is_default": bool(r["is_default"]),
+                "default_model": r["default_model"] or "",
                 "created_at": r["created_at"],
             }
             for r in rows
         ]
 
     def get_account(self, api_key: str) -> Optional[Dict[str, Any]]:
+        from joycode_proxy.crypto import decrypt, is_encrypted
         conn = self._get_conn()
         row = conn.execute(
-            "SELECT api_key, pt_key, user_id, is_default FROM accounts WHERE api_key = ?",
+            "SELECT api_key, pt_key, user_id, is_default, default_model FROM accounts WHERE api_key = ?",
             (api_key,),
         ).fetchone()
         if not row:
             return None
+        pt_key = row["pt_key"]
+        if is_encrypted(pt_key):
+            pt_key = decrypt(pt_key)
         return {
             "api_key": row["api_key"],
-            "pt_key": row["pt_key"],
+            "pt_key": pt_key,
             "user_id": row["user_id"],
             "is_default": bool(row["is_default"]),
+            "default_model": row["default_model"] or "",
         }
 
     def get_default_account(self) -> Optional[Dict[str, Any]]:
+        from joycode_proxy.crypto import decrypt, is_encrypted
         conn = self._get_conn()
         row = conn.execute(
             "SELECT api_key, pt_key, user_id FROM accounts WHERE is_default = 1"
@@ -119,7 +147,10 @@ class Database:
             ).fetchone()
         if not row:
             return None
-        return {"api_key": row["api_key"], "pt_key": row["pt_key"], "user_id": row["user_id"]}
+        pt_key = row["pt_key"]
+        if is_encrypted(pt_key):
+            pt_key = decrypt(pt_key)
+        return {"api_key": row["api_key"], "pt_key": pt_key, "user_id": row["user_id"]}
 
     def set_default(self, api_key: str) -> bool:
         conn = self._get_conn()
@@ -202,6 +233,42 @@ class Database:
             "accounts_count": conn.execute("SELECT COUNT(*) as cnt FROM accounts").fetchone()["cnt"],
         }
 
+    def get_account_stats(self, api_key: str) -> Dict[str, Any]:
+        """Get per-account statistics from request_logs."""
+        conn = self._get_conn()
+        total = conn.execute(
+            "SELECT COUNT(*) as cnt FROM request_logs WHERE api_key = ?", (api_key,)
+        ).fetchone()["cnt"]
+        by_model = conn.execute(
+            "SELECT model, COUNT(*) as cnt FROM request_logs WHERE api_key = ? GROUP BY model ORDER BY cnt DESC",
+            (api_key,),
+        ).fetchall()
+        avg_latency = conn.execute(
+            "SELECT AVG(latency_ms) as avg FROM request_logs WHERE api_key = ? AND latency_ms > 0",
+            (api_key,),
+        ).fetchone()["avg"]
+        by_endpoint = conn.execute(
+            "SELECT endpoint, COUNT(*) as cnt FROM request_logs WHERE api_key = ? GROUP BY endpoint ORDER BY cnt DESC",
+            (api_key,),
+        ).fetchall()
+        stream_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND stream = 1",
+            (api_key,),
+        ).fetchone()["cnt"]
+        error_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND status_code >= 400",
+            (api_key,),
+        ).fetchone()["cnt"]
+        return {
+            "api_key": api_key,
+            "total_requests": total,
+            "by_model": [{"model": r["model"], "count": r["cnt"]} for r in by_model],
+            "by_endpoint": [{"endpoint": r["endpoint"], "count": r["cnt"]} for r in by_endpoint],
+            "avg_latency_ms": round(avg_latency or 0, 1),
+            "stream_count": stream_count,
+            "error_count": error_count,
+        }
+
     def get_credential_router(self):
         """Build a CredentialRouter from DB accounts."""
         from joycode_proxy.credential_router import CredentialRouter
@@ -209,7 +276,11 @@ class Database:
         for acc in self.list_accounts():
             full = self.get_account(acc["api_key"])
             if full:
-                router.add_account(full["api_key"], full["pt_key"], full["user_id"], default=full["is_default"])
+                router.add_account(
+                    full["api_key"], full["pt_key"], full["user_id"],
+                    default=full["is_default"],
+                    default_model=full.get("default_model", ""),
+                )
         return router
 
     def migrate_from_json(self):
@@ -228,5 +299,24 @@ class Database:
                 )
                 count += 1
         if count > 0:
-            log.info("Migrated %d accounts from JSON to SQLite", count)
+            log.info("Migrated %d accounts from JSON to SQLite (encrypted)", count)
         return count
+
+    def migrate_plaintext_credentials(self):
+        """Encrypt any plaintext pt_key values in the database."""
+        from joycode_proxy.crypto import encrypt, is_encrypted
+        conn = self._get_conn()
+        rows = conn.execute("SELECT api_key, pt_key FROM accounts").fetchall()
+        migrated = 0
+        for row in rows:
+            if not is_encrypted(row["pt_key"]):
+                encrypted = encrypt(row["pt_key"])
+                conn.execute(
+                    "UPDATE accounts SET pt_key = ?, updated_at = datetime('now') WHERE api_key = ?",
+                    (encrypted, row["api_key"]),
+                )
+                migrated += 1
+        if migrated > 0:
+            conn.commit()
+            log.info("Encrypted %d plaintext credentials", migrated)
+        return migrated

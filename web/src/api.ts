@@ -2,7 +2,13 @@ export interface Account {
   api_key: string;
   user_id: string;
   is_default: boolean;
+  default_model: string;
   created_at?: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
 }
 
 export interface Stats {
@@ -15,6 +21,16 @@ export interface Stats {
 
 export interface Settings {
   [key: string]: string;
+}
+
+export interface AccountStats {
+  api_key: string;
+  total_requests: number;
+  by_model: { model: string; count: number }[];
+  by_endpoint: { endpoint: string; count: number }[];
+  avg_latency_ms: number;
+  stream_count: number;
+  error_count: number;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -31,7 +47,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   listAccounts: () => request<{ accounts: Account[] }>('/api/accounts').then(r => r.accounts),
-  addAccount: (data: { api_key: string; pt_key: string; user_id: string; is_default?: boolean }) =>
+  addAccount: (data: { api_key: string; pt_key: string; user_id: string; is_default?: boolean; default_model?: string }) =>
     request<{ ok: boolean }>('/api/accounts', { method: 'POST', body: JSON.stringify(data) }),
   removeAccount: (apiKey: string) =>
     request<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(apiKey)}`, { method: 'DELETE' }),
@@ -39,9 +55,19 @@ export const api = {
     request<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(apiKey)}/default`, { method: 'PUT' }),
   validateAccount: (apiKey: string) =>
     request<{ valid: boolean }>(`/api/accounts/${encodeURIComponent(apiKey)}/validate`, { method: 'POST' }),
+  listModels: () => request<{ models: ModelInfo[] }>('/api/models').then(r => r.models),
+  listAccountModels: (apiKey: string) =>
+    request<{ models: ModelInfo[] }>(`/api/accounts/${encodeURIComponent(apiKey)}/models`).then(r => r.models),
   getStats: () => request<Stats>('/api/stats'),
   getSettings: () => request<{ settings: Settings }>('/api/settings').then(r => r.settings),
   updateSettings: (data: Settings) =>
     request<{ ok: boolean }>('/api/settings', { method: 'PUT', body: JSON.stringify(data) }),
   getHealth: () => request<{ status: string; accounts: number }>('/api/health'),
+  updateAccountModel: (apiKey: string, defaultModel: string) =>
+    request<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(apiKey)}/model`, {
+      method: 'PUT',
+      body: JSON.stringify({ default_model: defaultModel }),
+    }),
+  getAccountStats: (apiKey: string) =>
+    request<AccountStats>(`/api/accounts/${encodeURIComponent(apiKey)}/stats`),
 };

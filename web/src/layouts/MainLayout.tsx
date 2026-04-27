@@ -7,14 +7,15 @@ import {
   ApiOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
+import useDocumentTitle from '../hooks/useDocumentTitle';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
 
 const menuItems = [
-  { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
-  { key: '/accounts', icon: <TeamOutlined />, label: 'Accounts' },
-  { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
+  { key: '/', icon: <DashboardOutlined />, label: '数据概览' },
+  { key: '/accounts', icon: <TeamOutlined />, label: '账号管理' },
+  { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
 ];
 
 const MainLayout: React.FC = () => {
@@ -22,6 +23,7 @@ const MainLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { token } = theme.useToken();
+  useDocumentTitle();
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -38,12 +40,12 @@ const MainLayout: React.FC = () => {
           justifyContent: 'center',
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
         }}>
-          <ApiOutlined style={{ fontSize: 20, marginRight: collapsed ? 0 : 8 }} />
-          {!collapsed && <Text strong>JoyCode Proxy</Text>}
+          <ApiOutlined style={{ fontSize: 20, marginRight: collapsed ? 0 : 8, color: '#1677ff' }} />
+          {!collapsed && <Text strong style={{ fontSize: 15 }}>JoyCode 代理</Text>}
         </div>
         <Menu
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={[location.pathname.startsWith('/accounts') ? '/accounts' : location.pathname]}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
         />
@@ -55,8 +57,12 @@ const MainLayout: React.FC = () => {
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
           display: 'flex',
           alignItems: 'center',
+          justifyContent: 'space-between',
         }}>
-          <Text type="secondary">JoyCode API Proxy Management</Text>
+          <Text type="secondary">JoyCode API 代理服务 — 管理控制台</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            代理地址：localhost:34891
+          </Text>
         </Header>
         <Content style={{ margin: 24 }}>
           <Outlet />

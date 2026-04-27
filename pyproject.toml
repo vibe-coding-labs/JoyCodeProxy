@@ -12,6 +12,7 @@ dependencies = [
     "rich>=13.7",
     "litellm>=1.0",
     "aiosqlite>=0.20",
+    "cryptography>=44.0",
 ]
 
 [project.optional-dependencies]

@@ -239,14 +239,18 @@ def create_openai_router(cred_router: CredentialRouter) -> APIRouter:
     async def chat_completions(request: Request) -> Any:
         api_key = request.headers.get("x-api-key", "")
         client = cred_router.get_client(api_key or None)
+        account_default_model = cred_router.get_default_model(api_key or None)
 
         try:
             req_body = await request.json()
         except Exception:
             return _error_response("invalid JSON", 400)
 
-        model: str = req_body.get("model") or DEFAULT_MODEL
+        model: str = req_body.get("model") or account_default_model or DEFAULT_MODEL
         jc_body = translate_request(req_body)
+        if not jc_body.get("model") or jc_body["model"] == DEFAULT_MODEL:
+            if account_default_model:
+                jc_body["model"] = account_default_model
 
         if jc_body.get("stream"):
             return _stream_chat(client, jc_body, model)

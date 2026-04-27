@@ -1,16 +1,30 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Table, Button, Space, Modal, Form, Input, Switch,
-  message, Popconfirm, Tag, Typography,
+  Table, Button, Space, Modal, Form, Input, Switch, Select,
+  message, Popconfirm, Tag, Typography, Alert, Tooltip,
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, StarOutlined,
   SafetyCertificateOutlined, ReloadOutlined,
+  QuestionCircleOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { Account } from '../api';
 
+const BUILTIN_MODELS = [
+  { label: 'JoyAI-Code（推荐）', value: 'JoyAI-Code' },
+  { label: 'GLM-5.1', value: 'GLM-5.1' },
+  { label: 'GLM-5', value: 'GLM-5' },
+  { label: 'GLM-4.7', value: 'GLM-4.7' },
+  { label: 'Kimi-K2.6', value: 'Kimi-K2.6' },
+  { label: 'Kimi-K2.5', value: 'Kimi-K2.5' },
+  { label: 'MiniMax-M2.7', value: 'MiniMax-M2.7' },
+  { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
+];
+
 const Accounts: React.FC = () => {
+  const navigate = useNavigate();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -23,7 +37,7 @@ const Accounts: React.FC = () => {
       const data = await api.listAccounts();
       setAccounts(data);
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : String(e));
+      message.error(e instanceof Error ? e.message : '获取账号列表失败');
     } finally {
       setLoading(false);
     }
@@ -31,35 +45,35 @@ const Accounts: React.FC = () => {
 
   useEffect(() => { fetchAccounts(); }, []);
 
-  const handleAdd = async (values: { api_key: string; pt_key: string; user_id: string; is_default?: boolean }) => {
+  const handleAdd = async (values: { api_key: string; pt_key: string; user_id: string; is_default?: boolean; default_model?: string }) => {
     try {
       await api.addAccount(values);
-      message.success(`Account "${values.api_key}" added`);
+      message.success(`账号「${values.api_key}」添加成功`);
       setModalOpen(false);
       form.resetFields();
       fetchAccounts();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : String(e));
+      message.error(e instanceof Error ? e.message : '添加账号失败');
     }
   };
 
   const handleRemove = async (apiKey: string) => {
     try {
       await api.removeAccount(apiKey);
-      message.success(`Account "${apiKey}" removed`);
+      message.success(`账号「${apiKey}」已删除`);
       fetchAccounts();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : String(e));
+      message.error(e instanceof Error ? e.message : '删除账号失败');
     }
   };
 
   const handleSetDefault = async (apiKey: string) => {
     try {
       await api.setDefault(apiKey);
-      message.success(`Default account set to "${apiKey}"`);
+      message.success(`已将「${apiKey}」设为默认账号`);
       fetchAccounts();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : String(e));
+      message.error(e instanceof Error ? e.message : '设置默认账号失败');
     }
   };
 
@@ -68,12 +82,12 @@ const Accounts: React.FC = () => {
     try {
       const result = await api.validateAccount(apiKey);
       if (result.valid) {
-        message.success(`Account "${apiKey}" is valid`);
+        message.success(`账号「${apiKey}」验证通过，凭证有效`);
       } else {
-        message.error(`Account "${apiKey}" validation failed`);
+        message.error(`账号「${apiKey}」验证失败，凭证无效或已过期`);
       }
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : String(e));
+      message.error(e instanceof Error ? e.message : '验证请求失败');
     } finally {
       setValidating(null);
     }
@@ -81,30 +95,36 @@ const Accounts: React.FC = () => {
 
   const columns = [
     {
-      title: 'API Key',
+      title: '路由密钥 (API Key)',
       dataIndex: 'api_key',
       key: 'api_key',
       render: (text: string) => <Typography.Text code>{text}</Typography.Text>,
     },
     {
-      title: 'User ID',
+      title: '用户 ID',
       dataIndex: 'user_id',
       key: 'user_id',
     },
     {
-      title: 'Default',
+      title: '状态',
       dataIndex: 'is_default',
       key: 'is_default',
-      render: (val: boolean) => val ? <Tag color="blue"><StarOutlined /> Default</Tag> : null,
+      render: (val: boolean) => val ? <Tag color="blue"><StarOutlined /> 默认账号</Tag> : null,
     },
     {
-      title: 'Actions',
+      title: '默认模型',
+      dataIndex: 'default_model',
+      key: 'default_model',
+      render: (val: string) => val ? <Tag color="green">{val}</Tag> : <Typography.Text type="secondary">未设置</Typography.Text>,
+    },
+    {
+      title: '操作',
       key: 'actions',
       render: (_: unknown, record: Account) => (
         <Space>
           {!record.is_default && (
             <Button size="small" onClick={() => handleSetDefault(record.api_key)}>
-              <StarOutlined /> Set Default
+              <StarOutlined /> 设为默认
             </Button>
           )}
           <Button
@@ -112,13 +132,14 @@ const Accounts: React.FC = () => {
             onClick={() => handleValidate(record.api_key)}
             loading={validating === record.api_key}
           >
-            <SafetyCertificateOutlined /> Validate
+            <SafetyCertificateOutlined /> 验证
           </Button>
           <Popconfirm
-            title={`Remove account "${record.api_key}"?`}
+            title={`确定要删除账号「${record.api_key}」吗？`}
+            description="删除后使用该密钥的客户端将无法访问"
             onConfirm={() => handleRemove(record.api_key)}
           >
-            <Button size="small" danger><DeleteOutlined /></Button>
+            <Button size="small" danger><DeleteOutlined /> 删除</Button>
           </Popconfirm>
         </Space>
       ),
@@ -128,14 +149,22 @@ const Accounts: React.FC = () => {
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>Account Management</Typography.Title>
+        <Typography.Title level={4} style={{ margin: 0 }}>账号管理</Typography.Title>
         <Space>
-          <Button onClick={fetchAccounts} icon={<ReloadOutlined />}>Refresh</Button>
+          <Button onClick={fetchAccounts} icon={<ReloadOutlined />}>刷新</Button>
           <Button type="primary" onClick={() => setModalOpen(true)} icon={<PlusOutlined />}>
-            Add Account
+            添加账号
           </Button>
         </Space>
       </div>
+
+      <Alert
+        type="info"
+        showIcon
+        message="多账号路由说明"
+        description="每个账号对应一个 JoyCode 后端凭证。客户端通过「路由密钥」(API Key) 来指定使用哪个账号。同一个密钥始终路由到同一个账号，以最大化缓存命中率。配置 Claude Code 时，将路由密钥填入 ANTHROPIC_API_KEY 环境变量即可。"
+        style={{ marginBottom: 16 }}
+      />
 
       <Table
         dataSource={accounts}
@@ -143,25 +172,101 @@ const Accounts: React.FC = () => {
         rowKey="api_key"
         loading={loading}
         pagination={false}
+        onRow={(record) => ({
+          onClick: () => navigate(`/accounts/${encodeURIComponent(record.api_key)}`),
+          style: { cursor: 'pointer' },
+        })}
+        locale={{ emptyText: '暂无账号，请点击「添加账号」按钮配置您的第一个 JoyCode 账号' }}
       />
 
       <Modal
-        title="Add Account"
+        title="添加 JoyCode 账号"
         open={modalOpen}
         onCancel={() => { setModalOpen(false); form.resetFields(); }}
         onOk={() => form.submit()}
+        okText="添加"
+        cancelText="取消"
+        width={560}
       >
+        <Alert
+          type="info"
+          showIcon
+          message="添加账号说明"
+          description="将 JoyCode 客户端的凭证信息填入下方表单。添加后，Claude Code 使用对应的路由密钥即可通过此账号访问 JoyCode 后端。"
+          style={{ marginBottom: 16 }}
+        />
         <Form form={form} layout="vertical" onFinish={handleAdd}>
-          <Form.Item name="api_key" label="API Key" rules={[{ required: true, message: 'Required' }]}>
-            <Input placeholder="e.g. my-key-1 (used by clients to route)" />
+          <Form.Item
+            name="api_key"
+            label={
+              <Space size={4}>
+                路由密钥 (API Key)
+                <Tooltip title="客户端使用此密钥来路由到对应的 JoyCode 账号。配置 Claude Code 时，将此值填入 ANTHROPIC_API_KEY 环境变量。建议使用易辨识的名称">
+                  <QuestionCircleOutlined style={{ color: '#999' }} />
+                </Tooltip>
+              </Space>
+            }
+            rules={[{ required: true, message: '请输入路由密钥' }]}
+          >
+            <Input placeholder="例如：team-a、user-zhangsan、dev-key-01" />
           </Form.Item>
-          <Form.Item name="pt_key" label="JoyCode ptKey" rules={[{ required: true, message: 'Required' }]}>
-            <Input.Password placeholder="JoyCode ptKey credential" />
+          <Form.Item
+            name="pt_key"
+            label={
+              <Space size={4}>
+                JoyCode ptKey 凭证
+                <Tooltip title="从 JoyCode 客户端获取的 ptKey，用于后端 API 认证。获取方式：打开 JoyCode 桌面客户端 → 设置 → 开发者 → 复制 ptKey。凭证将以加密形式存储在本地数据库中">
+                  <QuestionCircleOutlined style={{ color: '#999' }} />
+                </Tooltip>
+              </Space>
+            }
+            rules={[{ required: true, message: '请输入 ptKey' }]}
+          >
+            <Input.Password placeholder="粘贴从 JoyCode 客户端复制的 ptKey，例如：eyJhbGci..." />
           </Form.Item>
-          <Form.Item name="user_id" label="JoyCode User ID" rules={[{ required: true, message: 'Required' }]}>
-            <Input placeholder="e.g. user-12345" />
+          <Form.Item
+            name="user_id"
+            label={
+              <Space size={4}>
+                JoyCode 用户 ID
+                <Tooltip title="与 ptKey 对应的用户 ID。获取方式：打开 JoyCode 桌面客户端 → 设置 → 个人信息 → 复制用户 ID">
+                  <QuestionCircleOutlined style={{ color: '#999' }} />
+                </Tooltip>
+              </Space>
+            }
+            rules={[{ required: true, message: '请输入用户 ID' }]}
+          >
+            <Input placeholder="例如：user-12345 或从 JoyCode 客户端复制" />
           </Form.Item>
-          <Form.Item name="is_default" label="Set as default" valuePropName="checked">
+          <Form.Item
+            name="default_model"
+            label={
+              <Space size={4}>
+                默认模型
+                <Tooltip title="此账号使用的默认模型。留空则使用系统全局默认模型。添加账号后，可在账号列表中实时获取该账号支持的全部模型">
+                  <QuestionCircleOutlined style={{ color: '#999' }} />
+                </Tooltip>
+              </Space>
+            }
+          >
+            <Select
+              placeholder="留空使用系统默认模型"
+              options={BUILTIN_MODELS}
+              allowClear
+            />
+          </Form.Item>
+          <Form.Item
+            name="is_default"
+            valuePropName="checked"
+            label={
+              <Space size={4}>
+                设为默认账号
+                <Tooltip title="当客户端未提供路由密钥时，请求将自动路由到此默认账号。建议将最常用的账号设为默认">
+                  <QuestionCircleOutlined style={{ color: '#999' }} />
+                </Tooltip>
+              </Space>
+            }
+          >
             <Switch />
           </Form.Item>
         </Form>

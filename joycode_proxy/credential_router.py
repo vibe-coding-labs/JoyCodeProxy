@@ -17,16 +17,22 @@ class CredentialRouter:
 
     def __init__(self):
         self._clients: Dict[str, Client] = {}
+        self._default_models: Dict[str, str] = {}
         self._default_key: Optional[str] = None
 
     @property
     def default_key(self) -> Optional[str]:
         return self._default_key
 
-    def add_account(self, api_key: str, pt_key: str, user_id: str, default: bool = False):
+    def add_account(self, api_key: str, pt_key: str, user_id: str, default: bool = False,
+                    default_model: str = ""):
         """Register a new account. Overwrites existing key."""
         client = Client(pt_key, user_id)
         self._clients[api_key] = client
+        if default_model:
+            self._default_models[api_key] = default_model
+        elif api_key in self._default_models:
+            del self._default_models[api_key]
         if default or self._default_key is None:
             self._default_key = api_key
         log.info("Account registered: api_key=%s user_id=%s default=%s", api_key, user_id, default)
@@ -39,6 +45,18 @@ class CredentialRouter:
             return self._clients[self._default_key]
         raise KeyError(f"No account found for key '{api_key}' and no default configured")
 
+    def get_default_model(self, api_key: Optional[str] = None) -> str:
+        """Get default model for the given api_key.
+
+        When api_key is provided, returns the specific account's model or "".
+        When api_key is None, falls back to the default account's model.
+        """
+        if api_key:
+            return self._default_models.get(api_key, "")
+        if self._default_key:
+            return self._default_models.get(self._default_key, "")
+        return ""
+
     def list_accounts(self) -> List[Dict]:
         """Return list of account info dicts."""
         result = []
@@ -47,6 +65,7 @@ class CredentialRouter:
                 "api_key": key,
                 "user_id": client.user_id,
                 "is_default": key == self._default_key,
+                "default_model": self._default_models.get(key, ""),
             })
         return result
 
@@ -54,6 +73,7 @@ class CredentialRouter:
         """Remove an account. Returns True if found and removed."""
         if api_key in self._clients:
             del self._clients[api_key]
+            self._default_models.pop(api_key, None)
             if self._default_key == api_key:
                 self._default_key = next(iter(self._clients), None)
             log.info("Account removed: api_key=%s", api_key)
@@ -71,6 +91,7 @@ class CredentialRouter:
                 "pt_key": client.pt_key,
                 "user_id": client.user_id,
                 "default": key == self._default_key,
+                "default_model": self._default_models.get(key, ""),
             })
         path.write_text(json.dumps(accounts, indent=2, ensure_ascii=False))
         os.chmod(path, 0o600)
@@ -90,6 +111,7 @@ class CredentialRouter:
                 pt_key=account["pt_key"],
                 user_id=account["user_id"],
                 default=account.get("default", False),
+                default_model=account.get("default_model", ""),
             )
         log.info("Loaded %d account(s) from %s", len(router._clients), path)
         return router

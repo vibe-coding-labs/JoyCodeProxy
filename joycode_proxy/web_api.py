@@ -25,9 +25,10 @@ def create_web_api_router(db: Database) -> APIRouter:
         pt_key = body.get("pt_key", "").strip()
         user_id = body.get("user_id", "").strip()
         is_default = body.get("is_default", False)
+        default_model = body.get("default_model", "").strip()
         if not api_key or not pt_key or not user_id:
             raise HTTPException(400, "api_key, pt_key, user_id are required")
-        db.add_account(api_key, pt_key, user_id, is_default=is_default)
+        db.add_account(api_key, pt_key, user_id, is_default=is_default, default_model=default_model)
         return {"ok": True, "api_key": api_key}
 
     @router.delete("/accounts/{api_key:path}")
@@ -69,6 +70,46 @@ def create_web_api_router(db: Database) -> APIRouter:
     @router.get("/stats/logs")
     async def get_logs(limit: int = 100):
         return {"logs": db.get_recent_logs(limit)}
+
+    # -- Models --
+
+    @router.get("/models")
+    async def list_models():
+        """Return hardcoded model list (always available, no credentials needed)."""
+        from joycode_proxy.client import MODELS
+        return {"models": [{"id": m, "name": m} for m in MODELS]}
+
+    @router.get("/accounts/{api_key:path}/models")
+    async def list_account_models(api_key: str):
+        """Return live model list from JoyCode API using account credentials."""
+        acc = db.get_account(api_key)
+        if not acc:
+            raise HTTPException(404, f"Account '{api_key}' not found")
+        from joycode_proxy.client import Client
+        try:
+            client = Client(acc["pt_key"], acc["user_id"])
+            model_list = client.list_models()
+            return {"models": model_list}
+        except Exception as e:
+            log.warning("Failed to fetch models for account %s: %s", api_key, e)
+            raise HTTPException(502, f"Failed to fetch models: {e}")
+
+    @router.put("/accounts/{api_key:path}/model")
+    async def update_account_model(api_key: str, request: Request):
+        body = await request.json()
+        default_model = body.get("default_model", "").strip()
+        acc = db.get_account(api_key)
+        if not acc:
+            raise HTTPException(404, f"Account '{api_key}' not found")
+        db.update_account_model(api_key, default_model)
+        return {"ok": True, "api_key": api_key, "default_model": default_model}
+
+    @router.get("/accounts/{api_key:path}/stats")
+    async def get_account_stats(api_key: str):
+        acc = db.get_account(api_key)
+        if not acc:
+            raise HTTPException(404, f"Account '{api_key}' not found")
+        return db.get_account_stats(api_key)
 
     # -- Health --
 

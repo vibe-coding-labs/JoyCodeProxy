@@ -77,6 +77,7 @@ def serve(ctx, host: str, port: int):
 
     db = Database()
     db.migrate_from_json()
+    db.migrate_plaintext_credentials()
 
     router = db.get_credential_router()
 
