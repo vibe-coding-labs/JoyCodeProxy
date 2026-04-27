@@ -72,10 +72,22 @@ def cli(ctx, ptkey: str, userid: str, skip_validation: bool, verbose: bool):
 @click.pass_context
 def serve(ctx, host: str, port: int):
     import uvicorn
+    from joycode_proxy.db import Database
     print_banner()
-    client = _resolve_client(ctx.obj["ptkey"], ctx.obj["userid"], ctx.obj["skip_validation"])
+
+    db = Database()
+    db.migrate_from_json()
+
+    router = db.get_credential_router()
+
+    if not router.list_accounts():
+        client = _resolve_client(ctx.obj["ptkey"], ctx.obj["userid"], ctx.obj["skip_validation"])
+        db.add_account("default", client.pt_key, client.user_id, is_default=True)
+        router = db.get_credential_router()
+        log.info("No accounts configured, using auto-detected credentials as default")
+
     from joycode_proxy.server import create_app
-    app = create_app(client)
+    app = create_app(router, db=db)
     print_endpoint_tree(host, port)
     console.print()
     log_level = "debug" if ctx.obj.get("verbose") else "info"
@@ -314,6 +326,76 @@ def service_status():
     if not found:
         print_warning("Service installed but not running")
     console.print(f"\n  Logs: [cyan]{home / '.joycode-proxy' / 'logs'}/[/cyan]")
+
+
+@cli.group()
+def account():
+    """Manage JoyCode accounts for multi-user routing."""
+    pass
+
+
+@account.command("add")
+@click.argument("api_key")
+@click.option("-k", "--ptkey", required=True, help="JoyCode ptKey")
+@click.option("-u", "--userid", required=True, help="JoyCode userID")
+@click.option("-d", "--default", is_flag=True, help="Set as default account")
+def account_add(api_key: str, ptkey: str, userid: str, default: bool):
+    """Add a new account. API_KEY is the key clients use to route to this account."""
+    from joycode_proxy.credential_router import CredentialRouter
+    router = CredentialRouter.load()
+    router.add_account(api_key, ptkey, userid, default=default)
+    router.save()
+    print_success(f"Account added: {api_key} (user={userid}, default={default})")
+
+
+@account.command("remove")
+@click.argument("api_key")
+def account_remove(api_key: str):
+    """Remove an account by its API key."""
+    from joycode_proxy.credential_router import CredentialRouter
+    router = CredentialRouter.load()
+    if router.remove_account(api_key):
+        router.save()
+        print_success(f"Account removed: {api_key}")
+    else:
+        print_error(f"Account not found: {api_key}")
+
+
+@account.command("list")
+def account_list():
+    """List all configured accounts."""
+    from joycode_proxy.credential_router import CredentialRouter
+    router = CredentialRouter.load()
+    accounts = router.list_accounts()
+    if not accounts:
+        print_warning("No accounts configured")
+        return
+    from rich.table import Table
+    from rich import box
+    table = Table(title="JoyCode Accounts", box=box.ROUNDED)
+    table.add_column("API Key", style="cyan")
+    table.add_column("User ID", style="green")
+    table.add_column("Default", style="yellow")
+    for acc in accounts:
+        marker = "★" if acc["is_default"] else ""
+        table.add_row(acc["api_key"], acc["user_id"], marker)
+    console.print(table)
+
+
+@account.command("validate")
+def account_validate():
+    """Validate all configured accounts."""
+    from joycode_proxy.credential_router import CredentialRouter
+    router = CredentialRouter.load()
+    if not router.list_accounts():
+        print_warning("No accounts configured")
+        return
+    from rich.status import Status
+    with Status("[bold cyan]Validating accounts...", console=console):
+        results = router.validate_all()
+    for key, valid in results.items():
+        status = "[green]✓ Valid[/green]" if valid else "[red]✗ Invalid[/red]"
+        console.print(f"  {key}: {status}")
 
 
 if __name__ == "__main__":

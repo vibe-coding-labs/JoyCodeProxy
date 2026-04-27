@@ -10,6 +10,8 @@ dependencies = [
     "click>=8.2",
     "sse-starlette>=2.2",
     "rich>=13.7",
+    "litellm>=1.0",
+    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]

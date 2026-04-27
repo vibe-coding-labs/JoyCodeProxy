@@ -11,7 +11,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from joycode_proxy.client import CHAT_ENDPOINT, Client, DEFAULT_MODEL, MODELS
+from joycode_proxy.client import CHAT_ENDPOINT, DEFAULT_MODEL, MODELS
+from joycode_proxy.credential_router import CredentialRouter
 
 # ---------------------------------------------------------------------------
 # Model capabilities and reasoning model set
@@ -146,7 +147,7 @@ def translate_models(jc_models: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _stream_chat(
-    client: Client, jc_body: Dict[str, Any], model: str
+    client, jc_body: Dict[str, Any], model: str
 ) -> StreamingResponse:
     """Return a ``StreamingResponse`` that pipes JoyCode SSE chunks,
     enriching each data line with ``model``, ``object``, and ``id`` fields
@@ -212,7 +213,7 @@ def _stream_chat(
 # ---------------------------------------------------------------------------
 
 
-def create_openai_router(client: Client) -> APIRouter:
+def create_openai_router(cred_router: CredentialRouter) -> APIRouter:
     """Create and return a :class:`FastAPI.APIRouter` that exposes the
     OpenAI-compatible endpoints.
 
@@ -236,6 +237,9 @@ def create_openai_router(client: Client) -> APIRouter:
 
     @router.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
+        api_key = request.headers.get("x-api-key", "")
+        client = cred_router.get_client(api_key or None)
+
         try:
             req_body = await request.json()
         except Exception:
@@ -258,7 +262,9 @@ def create_openai_router(client: Client) -> APIRouter:
     # ---- GET /v1/models ----------------------------------------------------
 
     @router.get("/v1/models")
-    async def list_models() -> Any:
+    async def list_models(request: Request) -> Any:
+        api_key = request.headers.get("x-api-key", "")
+        client = cred_router.get_client(api_key or None)
         try:
             jc_models = client.list_models()
         except Exception as exc:
@@ -269,6 +275,8 @@ def create_openai_router(client: Client) -> APIRouter:
 
     @router.post("/v1/web-search")
     async def web_search(request: Request) -> Any:
+        api_key = request.headers.get("x-api-key", "")
+        client = cred_router.get_client(api_key or None)
         try:
             body = await request.json()
         except Exception:
@@ -289,6 +297,8 @@ def create_openai_router(client: Client) -> APIRouter:
 
     @router.post("/v1/rerank")
     async def rerank(request: Request) -> Any:
+        api_key = request.headers.get("x-api-key", "")
+        client = cred_router.get_client(api_key or None)
         try:
             body = await request.json()
         except Exception:
@@ -316,6 +326,7 @@ def create_openai_router(client: Client) -> APIRouter:
             content={
                 "status": "ok",
                 "service": "joycode-openai-proxy",
+                "accounts": len(cred_router.list_accounts()),
                 "endpoints": [
                     "/v1/chat/completions",
                     "/v1/models",
