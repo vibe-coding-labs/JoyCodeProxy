@@ -7,8 +7,10 @@ import (
 )
 
 var whoamiCmd = &cobra.Command{
-	Use:   "whoami",
-	Short: "Show current authenticated user info",
+	Use:     "whoami",
+	Short:   "查看当前认证用户信息",
+	GroupID: "query",
+	Example: `  joycode-proxy whoami`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveClient()
 		if err != nil {

@@ -7,10 +7,12 @@ import (
 )
 
 var searchCmd = &cobra.Command{
-	Use:   "search [query]",
-	Short: "Perform a web search",
-	Long:  "Search the web using JoyCode's built-in search API.",
-	Args:  cobra.MinimumNArgs(1),
+	Use:     "search [query]",
+	Short:   "网页搜索",
+	Long:    "使用 JoyCode 内置搜索 API 进行网页搜索。",
+	GroupID: "query",
+	Example: `  joycode-proxy search "Go 语言并发编程"`,
+	Args:    cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveClient()
 		if err != nil {

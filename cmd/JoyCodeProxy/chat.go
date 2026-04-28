@@ -14,9 +14,19 @@ var (
 )
 
 var chatCmd = &cobra.Command{
-	Use:   "chat [message]",
-	Short: "Send a chat message",
-	Args:  cobra.MinimumNArgs(1),
+	Use:     "chat [message]",
+	Short:   "发送聊天消息",
+	Long:    "通过 JoyCode API 发送一条聊天消息并返回响应。",
+	GroupID: "core",
+	Example: `  # 发送简单消息
+  joycode-proxy chat "你好"
+
+  # 指定模型
+  joycode-proxy chat -m GLM-5.1 "写一个排序算法"
+
+  # 流式输出
+  joycode-proxy chat -s "解释量子计算"`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveClient()
 		if err != nil {
@@ -68,8 +78,8 @@ func streamChat(client *joycode.Client, body map[string]interface{}) error {
 }
 
 func init() {
-	chatCmd.Flags().StringVarP(&chatModel, "model", "m", "JoyAI-Code", "model name")
-	chatCmd.Flags().BoolVarP(&chatStream, "stream", "s", false, "stream output")
-	chatCmd.Flags().IntVar(&chatMaxTokens, "max-tokens", 64000, "max output tokens")
+	chatCmd.Flags().StringVarP(&chatModel, "model", "m", "JoyAI-Code", "模型名称")
+	chatCmd.Flags().BoolVarP(&chatStream, "stream", "s", false, "流式输出")
+	chatCmd.Flags().IntVar(&chatMaxTokens, "max-tokens", 64000, "最大输出 token 数")
 	rootCmd.AddCommand(chatCmd)
 }

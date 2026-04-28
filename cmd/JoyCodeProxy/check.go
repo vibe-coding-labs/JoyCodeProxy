@@ -12,9 +12,15 @@ import (
 var checkPort int
 
 var checkCmd = &cobra.Command{
-	Use:   "check",
-	Short: "Check if the proxy server is running",
-	Long:  "Send a health check request to the proxy to verify it is running and responsive.",
+	Use:     "check",
+	Short:   "检查代理服务是否运行",
+	Long:    "向本地代理发送健康检查请求，验证服务是否正常运行。",
+	GroupID: "core",
+	Example: `  # 检查默认端口
+  joycode-proxy check
+
+  # 检查指定端口
+  joycode-proxy check -p 8080`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := fmt.Sprintf("http://localhost:%d/health", checkPort)
 		client := &http.Client{Timeout: 5 * time.Second}
@@ -25,8 +31,8 @@ var checkCmd = &cobra.Command{
 			fmt.Printf("  Address:  localhost:%d\n", checkPort)
 			fmt.Printf("  Error:    %s\n", err)
 			fmt.Println()
-			fmt.Println("  Start the proxy with: JoyCodeProxy serve")
-			fmt.Println("  Or install as service: JoyCodeProxy service install")
+			fmt.Println("  Start the proxy with: joycode-proxy serve")
+			fmt.Println("  Or install as service: joycode-proxy service install")
 			return nil
 		}
 		defer resp.Body.Close()
@@ -58,6 +64,6 @@ var checkCmd = &cobra.Command{
 }
 
 func init() {
-	checkCmd.Flags().IntVarP(&checkPort, "port", "p", 34891, "proxy port to check")
+	checkCmd.Flags().IntVarP(&checkPort, "port", "p", 34891, "检查端口")
 	rootCmd.AddCommand(checkCmd)
 }

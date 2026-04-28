@@ -17,16 +17,30 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "JoyCodeProxy",
-	Short: "JoyCode OpenAI-Compatible API Proxy",
-	Long:  "Convert JoyCode AI IDE APIs to OpenAI-compatible format for Codex and other tools.",
+	Use:   "joycode-proxy",
+	Short: "JoyCode API Proxy — 将 JoyCode API 转换为 OpenAI/Anthropic 兼容格式",
+	Long: `JoyCode API Proxy — 将 JoyCode 内部 API 转换为 OpenAI / Anthropic 兼容格式。
+
+让 Claude Code、Codex 等 AI 编程工具可以直接使用 JoyCode 的模型服务。
+
+快速开始:
+  joycode-proxy serve                  # 启动代理服务器（默认端口 34891）
+  joycode-proxy service install        # 安装为 macOS 服务（开机自启、崩溃重启）
+  joycode-proxy check                  # 检查代理是否运行
+
+配置 Claude Code:
+  export ANTHROPIC_BASE_URL=http://localhost:34891
+  export ANTHROPIC_API_KEY=joycode
+  claude`,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&ptKey, "ptkey", "k", "", "JoyCode ptKey (auto-detected if empty)")
-	rootCmd.PersistentFlags().StringVarP(&userID, "userid", "u", "", "JoyCode userID (auto-detected if empty)")
-	rootCmd.PersistentFlags().BoolVar(&skipValidation, "skip-validation", false, "skip credential validation on startup")
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
+	rootCmd.PersistentFlags().StringVarP(&ptKey, "ptkey", "k", "", "JoyCode ptKey（留空则自动从客户端检测）")
+	rootCmd.PersistentFlags().StringVarP(&userID, "userid", "u", "", "JoyCode userID（留空则自动从客户端检测）")
+	rootCmd.PersistentFlags().BoolVar(&skipValidation, "skip-validation", false, "跳过凭据验证")
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "启用调试日志")
 }
 
 func resolveClient() (*joycode.Client, error) {
@@ -44,7 +58,6 @@ func resolveClient() (*joycode.Client, error) {
 		creds = detected
 		source = "auto-detected"
 
-		// Partial override: flag value takes precedence
 		if ptKey != "" {
 			creds.PtKey = ptKey
 			source = "flags+auto-detected"

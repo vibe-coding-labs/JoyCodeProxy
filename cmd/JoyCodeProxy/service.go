@@ -17,14 +17,21 @@ const (
 )
 
 var serviceCmd = &cobra.Command{
-	Use:   "service",
-	Short: "Manage macOS launchd service",
-	Long:  "Install, uninstall, or check status of JoyCode Proxy as a macOS launchd service.",
+	Use:     "service",
+	Short:   "管理 macOS 服务（安装/卸载/状态）",
+	Long:    "将 JoyCode Proxy 安装为 macOS launchd 服务，支持开机自启和崩溃自动重启。",
+	GroupID: "service",
 }
 
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install and start the launchd service",
+	Short: "安装并启动 launchd 服务",
+	Long:  "将代理安装为 macOS launchd 服务。安装后自动启动，支持开机自启和崩溃自动重启。",
+	Example: `  # 使用默认端口 34891 安装
+  joycode-proxy service install
+
+  # 指定端口
+  joycode-proxy service install -p 8080`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		binPath, err := os.Executable()
 		if err != nil {
@@ -118,8 +125,9 @@ var serviceInstallCmd = &cobra.Command{
 }
 
 var serviceUninstallCmd = &cobra.Command{
-	Use:   "uninstall",
-	Short: "Stop and remove the launchd service",
+	Use:     "uninstall",
+	Short:   "停止并移除 launchd 服务",
+	Example: `  joycode-proxy service uninstall`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		home, _ := os.UserHomeDir()
 		plistPath := filepath.Join(home, "Library", "LaunchAgents", plistName)
@@ -141,8 +149,9 @@ var serviceUninstallCmd = &cobra.Command{
 }
 
 var serviceStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Check service status",
+	Use:     "status",
+	Short:   "查看服务运行状态",
+	Example: `  joycode-proxy service status`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		home, _ := os.UserHomeDir()
 		plistPath := filepath.Join(home, "Library", "LaunchAgents", plistName)
@@ -167,7 +176,7 @@ var serviceStatusCmd = &cobra.Command{
 		}
 		if !found {
 			fmt.Println("Service installed but not running (plist exists, not in launchctl).")
-			fmt.Println("Run 'JoyCodeProxy service install' to start it.")
+			fmt.Println("Run 'joycode-proxy service install' to start it.")
 		}
 
 		fmt.Printf("\nLogs: %s/\n", filepath.Join(home, logDir))
@@ -179,7 +188,7 @@ func init() {
 	serviceCmd.AddCommand(serviceInstallCmd)
 	serviceCmd.AddCommand(serviceUninstallCmd)
 	serviceCmd.AddCommand(serviceStatusCmd)
-	serviceCmd.PersistentFlags().IntVarP(&servePort, "port", "p", 34891, "bind port")
+	serviceCmd.PersistentFlags().IntVarP(&servePort, "port", "p", 34891, "绑定端口")
 	rootCmd.AddCommand(serviceCmd)
 }
 

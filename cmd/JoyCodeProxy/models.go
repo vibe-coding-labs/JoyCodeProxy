@@ -8,8 +8,10 @@ import (
 )
 
 var modelsCmd = &cobra.Command{
-	Use:   "models",
-	Short: "List available AI models",
+	Use:     "models",
+	Short:   "列出可用的 AI 模型",
+	GroupID: "query",
+	Example: `  joycode-proxy models`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveClient()
 		if err != nil {

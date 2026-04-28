@@ -21,9 +21,21 @@ var (
 )
 
 var serveCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "Start the OpenAI-compatible proxy server",
-	Long:  "Start an OpenAI-compatible API proxy that converts requests to JoyCode API format.",
+	Use:     "serve",
+	Short:   "启动代理服务器",
+	Long:    "启动 OpenAI/Anthropic 兼容的 API 代理服务器，将请求转换为 JoyCode API 格式。",
+	GroupID: "core",
+	Example: `  # 默认启动（0.0.0.0:34891）
+  joycode-proxy serve
+
+  # 指定端口
+  joycode-proxy serve -p 8080
+
+  # 启用调试日志
+  joycode-proxy -v serve
+
+  # 跳过凭据验证（用于测试）
+  joycode-proxy serve --skip-validation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := resolveClient()
 		if err != nil {
@@ -48,6 +60,10 @@ var serveCmd = &cobra.Command{
 
 		go func() {
 			log.Printf("JoyCode Proxy running on http://%s", addr)
+			fmt.Println()
+			fmt.Printf("  JoyCode Proxy %s\n", Version)
+			fmt.Println("  ─────────────────────────────────────────────────")
+			fmt.Println()
 			fmt.Println("  Endpoints:")
 			fmt.Println("    POST /v1/chat/completions  — Chat (OpenAI format)")
 			fmt.Println("    POST /v1/messages          — Chat (Anthropic/Claude Code format)")
@@ -63,6 +79,7 @@ var serveCmd = &cobra.Command{
 				fmt.Println()
 				fmt.Println("  Verbose logging: enabled")
 			}
+			fmt.Println()
 			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("Server error: %v", err)
 			}
@@ -84,8 +101,8 @@ var serveCmd = &cobra.Command{
 }
 
 func init() {
-	serveCmd.Flags().StringVarP(&serveHost, "host", "H", "0.0.0.0", "bind host")
-	serveCmd.Flags().IntVarP(&servePort, "port", "p", 34891, "bind port")
+	serveCmd.Flags().StringVarP(&serveHost, "host", "H", "0.0.0.0", "绑定地址")
+	serveCmd.Flags().IntVarP(&servePort, "port", "p", 34891, "绑定端口")
 	rootCmd.AddCommand(serveCmd)
 }
 
