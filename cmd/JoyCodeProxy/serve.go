@@ -35,10 +35,15 @@ var serveCmd = &cobra.Command{
 		srv.RegisterRoutes(mux)
 		anth.RegisterRoutes(mux)
 
+		var handler http.Handler = mux
+		if verbose {
+			handler = loggingMiddleware(mux)
+		}
+
 		addr := fmt.Sprintf("%s:%d", serveHost, servePort)
 		httpSrv := &http.Server{
 			Addr:    addr,
-			Handler: mux,
+			Handler: handler,
 		}
 
 		go func() {
@@ -54,6 +59,10 @@ var serveCmd = &cobra.Command{
 			fmt.Println("  Claude Code setup:")
 			fmt.Printf("    export ANTHROPIC_BASE_URL=http://%s\n", addr)
 			fmt.Println("    export ANTHROPIC_API_KEY=joycode")
+			if verbose {
+				fmt.Println()
+				fmt.Println("  Verbose logging: enabled")
+			}
 			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("Server error: %v", err)
 			}
@@ -78,4 +87,13 @@ func init() {
 	serveCmd.Flags().StringVarP(&serveHost, "host", "H", "0.0.0.0", "bind host")
 	serveCmd.Flags().IntVarP(&servePort, "port", "p", 34891, "bind port")
 	rootCmd.AddCommand(serveCmd)
+}
+
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		log.Printf("-> %s %s %s", r.Method, r.URL.Path, r.RemoteAddr)
+		next.ServeHTTP(w, r)
+		log.Printf("<- %s %s %s", r.Method, r.URL.Path, time.Since(start))
+	})
 }

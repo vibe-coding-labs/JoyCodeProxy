@@ -13,6 +13,7 @@ var (
 	ptKey          string
 	userID         string
 	skipValidation bool
+	verbose        bool
 )
 
 var rootCmd = &cobra.Command{
@@ -25,6 +26,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&ptKey, "ptkey", "k", "", "JoyCode ptKey (auto-detected if empty)")
 	rootCmd.PersistentFlags().StringVarP(&userID, "userid", "u", "", "JoyCode userID (auto-detected if empty)")
 	rootCmd.PersistentFlags().BoolVar(&skipValidation, "skip-validation", false, "skip credential validation on startup")
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
 }
 
 func resolveClient() (*joycode.Client, error) {
