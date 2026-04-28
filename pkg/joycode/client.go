@@ -21,7 +21,6 @@ const (
 		"JoyCode/2.4.5 Chrome/133.0.0.0 Electron/35.2.0 Safari/537.36"
 )
 
-// Models lists all known JoyCode model IDs available for direct passthrough.
 var Models = []string{
 	"JoyAI-Code",
 	"MiniMax-M2.7",
@@ -33,7 +32,6 @@ var Models = []string{
 	"Doubao-Seed-2.0-pro",
 }
 
-// Client is the JoyCode API HTTP client.
 type Client struct {
 	PtKey      string
 	UserID     string
@@ -41,7 +39,6 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// NewClient creates a JoyCode API client with the given credentials.
 func NewClient(ptKey, userID string) *Client {
 	return &Client{
 		PtKey:      ptKey,
@@ -49,6 +46,11 @@ func NewClient(ptKey, userID string) *Client {
 		SessionID:  newHexID(),
 		httpClient: &http.Client{Timeout: 120 * time.Second},
 	}
+}
+
+// SetHTTPClient replaces the internal HTTP client. Intended for testing.
+func (c *Client) SetHTTPClient(hc *http.Client) {
+	c.httpClient = hc
 }
 
 func newHexID() string {
@@ -115,7 +117,6 @@ func decodeBody(resp *http.Response) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
-// Post sends a POST request and returns parsed JSON.
 func (c *Client) Post(endpoint string, body map[string]interface{}) (map[string]interface{}, error) {
 	resp, err := c.doPost(endpoint, c.prepareBody(body))
 	if err != nil {
@@ -130,12 +131,11 @@ func (c *Client) Post(endpoint string, body map[string]interface{}) (map[string]
 	}
 	var result map[string]interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
 	}
 	return result, nil
 }
 
-// PostStream sends a POST and returns the raw response for SSE streaming.
 func (c *Client) PostStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
 	resp, err := c.doPost(endpoint, c.prepareBody(body))
 	if err != nil {
@@ -149,24 +149,30 @@ func (c *Client) PostStream(endpoint string, body map[string]interface{}) (*http
 	return resp, nil
 }
 
-// ListModels fetches the available model list.
 func (c *Client) ListModels() ([]ModelInfo, error) {
 	resp, err := c.Post("/api/saas/models/v1/modelList", map[string]interface{}{})
 	if err != nil {
 		return nil, err
 	}
-	data, _ := resp["data"].([]interface{})
+	data, ok := resp["data"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected models response format: missing data array")
+	}
 	models := make([]ModelInfo, 0, len(data))
 	for _, item := range data {
-		b, _ := json.Marshal(item)
+		b, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
 		var m ModelInfo
-		json.Unmarshal(b, &m)
+		if err := json.Unmarshal(b, &m); err != nil {
+			continue
+		}
 		models = append(models, m)
 	}
 	return models, nil
 }
 
-// WebSearch performs a web search.
 func (c *Client) WebSearch(query string) ([]interface{}, error) {
 	body := map[string]interface{}{
 		"messages": []map[string]string{{"role": "user", "content": query}},
@@ -180,7 +186,6 @@ func (c *Client) WebSearch(query string) ([]interface{}, error) {
 	return results, nil
 }
 
-// Rerank reranks documents by relevance to the query.
 func (c *Client) Rerank(query string, documents []string, topN int) (map[string]interface{}, error) {
 	return c.Post("/api/saas/openai/v1/rerank", map[string]interface{}{
 		"model": "Qwen3-Reranker-8B", "query": query,
@@ -188,12 +193,10 @@ func (c *Client) Rerank(query string, documents []string, topN int) (map[string]
 	})
 }
 
-// UserInfo returns the current authenticated user info.
 func (c *Client) UserInfo() (map[string]interface{}, error) {
 	return c.Post("/api/saas/user/v1/userInfo", map[string]interface{}{})
 }
 
-// Validate checks that the current credentials are valid by calling UserInfo.
 func (c *Client) Validate() error {
 	resp, err := c.UserInfo()
 	if err != nil {
