@@ -1,5 +1,6 @@
 export interface Account {
   api_key: string;
+  api_token: string;
   user_id: string;
   is_default: boolean;
   default_model: string;
@@ -31,6 +32,17 @@ export interface AccountStats {
   avg_latency_ms: number;
   stream_count: number;
   error_count: number;
+}
+
+export interface RequestLog {
+  id: number;
+  api_key: string;
+  model: string;
+  endpoint: string;
+  stream: boolean;
+  status_code: number;
+  latency_ms: number;
+  created_at: string;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -70,4 +82,8 @@ export const api = {
     }),
   getAccountStats: (apiKey: string) =>
     request<AccountStats>(`/api/accounts/${encodeURIComponent(apiKey)}/stats`),
+  getAccountLogs: (apiKey: string, limit = 200) =>
+    request<{ logs: RequestLog[]; total: number }>(`/api/accounts/${encodeURIComponent(apiKey)}/logs?limit=${limit}`),
+  renewToken: (apiKey: string) =>
+    request<{ ok: boolean; api_token: string }>(`/api/accounts/${encodeURIComponent(apiKey)}/renew-token`, { method: 'POST' }),
 };

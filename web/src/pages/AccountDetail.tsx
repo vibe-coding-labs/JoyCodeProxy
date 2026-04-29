@@ -1,18 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import {
   Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
-  message, Tooltip, Space, Empty, Divider,
+  message, Space, Table, Badge, Segmented, Tooltip,
 } from 'antd';
 import {
   ArrowLeftOutlined, ApiOutlined, ThunderboltOutlined,
   CheckCircleOutlined, WarningOutlined, ReloadOutlined,
-  QuestionCircleOutlined, UserOutlined, ClockCircleOutlined,
-  SettingOutlined,
+  ClockCircleOutlined, GlobalOutlined, FireOutlined, CopyOutlined,
 } from '@ant-design/icons';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, ResponsiveContainer } from 'recharts';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
+  ResponsiveContainer, PieChart, Pie, Cell,
+} from 'recharts';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { Account, AccountStats, ModelInfo } from '../api';
+import type { Account, AccountStats, ModelInfo, RequestLog } from '../api';
+import SvgClaudeCode from '../components/ClaudeCodeIcon';
+import SvgCodex from '../components/CodexIcon';
 
 const BUILTIN_MODELS = [
   { label: 'JoyAI-Code（推荐）', value: 'JoyAI-Code' },
@@ -25,30 +29,81 @@ const BUILTIN_MODELS = [
   { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
 ];
 
+const PIE_COLORS = ['#1677ff', '#52c41a', '#faad14', '#ff4d4f', '#722ed1', '#13c2c2', '#eb2f96', '#fa8c16'];
+
+const latencyColor = (ms: number) => {
+  if (ms < 500) return '#52c41a';
+  if (ms < 1500) return '#faad14';
+  return '#ff4d4f';
+};
+
+const statusTag = (code: number) => {
+  if (code >= 200 && code < 300) return <Tag color="success">{code}</Tag>;
+  if (code >= 400 && code < 500) return <Tag color="warning">{code}</Tag>;
+  return <Tag color="error">{code}</Tag>;
+};
+
+const formatTime = (t: string) => {
+  if (!t) return '-';
+  return t.replace('T', ' ').slice(0, 19);
+};
+
+const getBaseURL = () => `http://${window.location.host}`;
+
+const buildClaudeCodeCmd = (apiKey: string, model = 'GLM-5.1') => [
+  `API_TIMEOUT_MS=6000000 \\`,
+  `CLAUDE_CODE_MAX_RETRIES=1000000 \\`,
+  `ANTHROPIC_BASE_URL=${getBaseURL()} \\`,
+  `ANTHROPIC_API_KEY="${apiKey}" \\`,
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS=6553655 \\`,
+  `ANTHROPIC_MODEL=${model} \\`,
+  `claude --dangerously-skip-permissions`,
+].join('\n');
+
+const buildCodexCmd = (apiKey: string, model = 'GLM-5.1') => [
+  `OPENAI_BASE_URL=${getBaseURL()}/v1 \\`,
+  `OPENAI_API_KEY="${apiKey}" \\`,
+  `OPENAI_MODEL=${model} \\`,
+  `codex`,
+].join('\n');
+
+const copyCmd = async (text: string, label: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    message.success(`${label} 命令已复制到剪贴板`);
+  } catch {
+    message.error('复制失败');
+  }
+};
+
 const AccountDetail: React.FC = () => {
   const { apiKey } = useParams<{ apiKey: string }>();
   const navigate = useNavigate();
   const [account, setAccount] = useState<Account | null>(null);
   const [stats, setStats] = useState<AccountStats | null>(null);
+  const [logs, setLogs] = useState<RequestLog[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [modelLoading, setModelLoading] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
+  const [logFilter, setLogFilter] = useState<string>('all');
 
   const decodedKey = apiKey ? decodeURIComponent(apiKey) : '';
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [accounts, statsData] = await Promise.all([
+      const [accounts, statsData, logsData] = await Promise.all([
         api.listAccounts(),
         api.getAccountStats(decodedKey),
+        api.getAccountLogs(decodedKey, 500),
       ]);
       const acc = accounts.find((a) => a.api_key === decodedKey);
       setAccount(acc || null);
       setStats(statsData);
+      setLogs(logsData.logs || []);
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '加载账号详情失败');
+      message.error(e instanceof Error ? e.message : '加载失败');
     } finally {
       setLoading(false);
     }
@@ -60,7 +115,7 @@ const AccountDetail: React.FC = () => {
       const data = await api.listAccountModels(decodedKey);
       setModels(data);
     } catch {
-      // Fallback to builtin models
+      // fallback to builtin
     } finally {
       setModelLoading(false);
     }
@@ -76,14 +131,14 @@ const AccountDetail: React.FC = () => {
       message.success(`默认模型已更新为「${newModel || '未设置'}」`);
       fetchData();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '更新默认模型失败');
+      message.error(e instanceof Error ? e.message : '更新失败');
     } finally {
       setSavingModel(false);
     }
   };
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
-  if (!account) return <Empty description="账号不存在" />;
+  if (!account) return <div style={{ textAlign: 'center', padding: 100 }}>账号不存在</div>;
 
   const allModelOptions = [
     ...BUILTIN_MODELS,
@@ -92,144 +147,310 @@ const AccountDetail: React.FC = () => {
       .map((m) => ({ label: m.name || m.id, value: m.id })),
   ];
 
+  const filteredLogs = logFilter === 'all'
+    ? logs
+    : logFilter === 'errors'
+      ? logs.filter((l) => l.status_code >= 400)
+      : logs.filter((l) => l.stream);
+
+  const successRate = stats && stats.total_requests > 0
+    ? Math.round(((stats.total_requests - stats.error_count) / stats.total_requests) * 100)
+    : 100;
+
+  const endpointData = stats?.by_endpoint.map((e) => ({
+    name: e.endpoint.replace('/v1/', ''),
+    value: e.count,
+  })) || [];
+
+  const logColumns = [
+    {
+      title: '时间',
+      dataIndex: 'created_at',
+      key: 'time',
+      width: 170,
+      render: (t: string) => (
+        <Typography.Text style={{ fontSize: 12, fontFamily: 'monospace' }}>
+          {formatTime(t)}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: '端点',
+      dataIndex: 'endpoint',
+      key: 'endpoint',
+      width: 200,
+      render: (ep: string) => (
+        <Typography.Text code style={{ fontSize: 12 }}>{ep}</Typography.Text>
+      ),
+    },
+    {
+      title: '模型',
+      dataIndex: 'model',
+      key: 'model',
+      width: 140,
+      ellipsis: true,
+      render: (m: string) => m || <Typography.Text type="secondary">-</Typography.Text>,
+    },
+    {
+      title: '流式',
+      dataIndex: 'stream',
+      key: 'stream',
+      width: 60,
+      render: (s: boolean) => s
+        ? <Badge status="processing" text="" />
+        : <Badge status="default" text="" />,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status_code',
+      key: 'status',
+      width: 70,
+      render: (code: number) => statusTag(code),
+    },
+    {
+      title: '延迟',
+      dataIndex: 'latency_ms',
+      key: 'latency',
+      width: 100,
+      sorter: (a: RequestLog, b: RequestLog) => a.latency_ms - b.latency_ms,
+      render: (ms: number) => (
+        <Typography.Text style={{ color: latencyColor(ms), fontFamily: 'monospace', fontWeight: 500 }}>
+          {ms}ms
+        </Typography.Text>
+      ),
+    },
+  ];
+
   return (
     <div>
-      {/* 顶部操作栏 */}
-      <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/accounts')}>
-          返回列表
-        </Button>
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          {decodedKey}
-        </Typography.Title>
-        {account.is_default && <Tag color="blue">默认账号</Tag>}
-        <Button icon={<ReloadOutlined />} onClick={() => { fetchData(); fetchModels(); }} style={{ marginLeft: 'auto' }}>
-          刷新
-        </Button>
+      {/* Header */}
+      <div style={{
+        marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12,
+        borderBottom: '1px solid #f0f0f0', paddingBottom: 16,
+      }}>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/accounts')} type="text" />
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Typography.Title level={4} style={{ margin: 0 }}>{decodedKey}</Typography.Title>
+            {account.is_default && <Tag color="blue">默认</Tag>}
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {account.user_id} · 创建于 {account.created_at?.slice(0, 10) || '-'}
+          </Typography.Text>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>Token:</Typography.Text>
+            <Typography.Text code copyable style={{ fontSize: 11 }}>
+              {account.api_token}
+            </Typography.Text>
+          </div>
+        </div>
+        <Space>
+          <Select
+            style={{ width: 220 }}
+            value={account.default_model || undefined}
+            placeholder="默认模型"
+            options={allModelOptions}
+            allowClear
+            loading={modelLoading}
+            onChange={handleModelChange}
+            disabled={savingModel}
+            size="small"
+          />
+          <Button size="small" onClick={async () => {
+            try {
+              await api.renewToken(decodedKey);
+              message.success('API Token 已更新');
+              fetchData();
+            } catch (e: unknown) {
+              message.error(e instanceof Error ? e.message : '更新失败');
+            }
+          }}>
+            重置 Token
+          </Button>
+          <Button size="small" icon={<ReloadOutlined />} onClick={() => { fetchData(); fetchModels(); }}>
+            刷新
+          </Button>
+        </Space>
       </div>
 
-      {/* 账号信息 + 模型配置 */}
-      <Row gutter={[16, 16]}>
-        <Col xs={24} md={12}>
-          <Card title={<><UserOutlined /> 基本信息</>} size="small">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Typography.Text type="secondary">路由密钥</Typography.Text>
-                <Typography.Text code>{account.api_key}</Typography.Text>
-              </div>
-              <Divider style={{ margin: 0 }} />
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Typography.Text type="secondary">用户 ID</Typography.Text>
-                <Typography.Text>{account.user_id}</Typography.Text>
-              </div>
-              <Divider style={{ margin: 0 }} />
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Typography.Text type="secondary">创建时间</Typography.Text>
-                <Typography.Text>{account.created_at || '-'}</Typography.Text>
-              </div>
-            </div>
-          </Card>
-        </Col>
-        <Col xs={24} md={12}>
-          <Card title={<><SettingOutlined /> 模型配置</>} size="small">
-            <div style={{ marginBottom: 12 }}>
-              <Space size={4} style={{ marginBottom: 8 }}>
-                <Typography.Text type="secondary">默认模型</Typography.Text>
-                <Tooltip title="此账号的默认模型。当客户端未指定模型时使用。点击「获取在线模型」可从 JoyCode API 获取该账号支持的全部模型">
-                  <QuestionCircleOutlined style={{ color: '#999' }} />
+      {/* Quick start commands */}
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Typography.Text strong style={{ display: 'block', marginBottom: 10, fontSize: 13 }}>
+          快速启动命令
+        </Typography.Text>
+        <Row gutter={[16, 12]}>
+          <Col xs={24} md={12}>
+            <div style={{
+              background: '#f6f5f0', borderRadius: 6, padding: '10px 14px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <SvgClaudeCode />
+                  <Typography.Text strong style={{ fontSize: 13 }}>Claude Code</Typography.Text>
+                </div>
+                <Tooltip title="复制 Claude Code 命令">
+                  <Button
+                    type="text" size="small" icon={<CopyOutlined />}
+                    onClick={() => copyCmd(buildClaudeCodeCmd(account.api_token, account.default_model || undefined), 'Claude Code')}
+                  />
                 </Tooltip>
-              </Space>
+              </div>
+              <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#333' }}>
+{buildClaudeCodeCmd(account.api_token, account.default_model || undefined)}
+              </pre>
             </div>
-            <Space>
-              <Select
-                style={{ width: 260 }}
-                value={account.default_model || undefined}
-                placeholder="未设置 — 使用系统默认"
-                options={allModelOptions}
-                allowClear
-                loading={modelLoading}
-                onChange={handleModelChange}
-                disabled={savingModel}
-              />
-              <Button size="small" onClick={fetchModels} loading={modelLoading}>
-                获取在线模型
-              </Button>
-            </Space>
-            {account.default_model && (
-              <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-                客户端未指定模型时将自动使用「{account.default_model}」
-              </Typography.Text>
-            )}
-          </Card>
-        </Col>
-      </Row>
+          </Col>
+          <Col xs={24} md={12}>
+            <div style={{
+              background: '#f0faf5', borderRadius: 6, padding: '10px 14px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <SvgCodex />
+                  <Typography.Text strong style={{ fontSize: 13 }}>Codex</Typography.Text>
+                </div>
+                <Tooltip title="复制 Codex 命令">
+                  <Button
+                    type="text" size="small" icon={<CopyOutlined />}
+                    onClick={() => copyCmd(buildCodexCmd(account.api_token, account.default_model || undefined), 'Codex')}
+                  />
+                </Tooltip>
+              </div>
+              <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#333' }}>
+{buildCodexCmd(account.api_token, account.default_model || undefined)}
+              </pre>
+            </div>
+          </Col>
+        </Row>
+      </Card>
 
-      {/* 统计卡片 */}
+      {/* Stats row */}
       {stats && (
-        <>
-          <Typography.Title level={5} style={{ marginTop: 24, marginBottom: 12 }}>
-            <ClockCircleOutlined /> 使用统计
-          </Typography.Title>
-          <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
-            <Col xs={12} sm={6}>
-              <Card size="small">
-                <Statistic
-                  title="总请求数"
-                  value={stats.total_requests}
-                  prefix={<ApiOutlined />}
-                  valueStyle={{ fontSize: 22 }}
-                />
-              </Card>
-            </Col>
-            <Col xs={12} sm={6}>
-              <Card size="small">
-                <Statistic
-                  title="平均延迟"
-                  value={stats.avg_latency_ms}
-                  suffix="ms"
-                  prefix={<ThunderboltOutlined />}
-                  valueStyle={{ fontSize: 22 }}
-                />
-              </Card>
-            </Col>
-            <Col xs={12} sm={6}>
-              <Card size="small">
-                <Statistic
-                  title="流式请求"
-                  value={stats.stream_count}
-                  prefix={<CheckCircleOutlined />}
-                  valueStyle={{ fontSize: 22 }}
-                />
-              </Card>
-            </Col>
-            <Col xs={12} sm={6}>
-              <Card size="small">
-                <Statistic
-                  title="错误请求"
-                  value={stats.error_count}
-                  prefix={<WarningOutlined />}
-                  valueStyle={{ fontSize: 22, color: stats.error_count > 0 ? '#ff4d4f' : undefined }}
-                />
-              </Card>
-            </Col>
-          </Row>
-
-          {/* 模型使用分布图表 */}
-          {stats.by_model.length > 0 && (
-            <Card title="模型使用分布" size="small">
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={stats.by_model}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="model" tick={{ fontSize: 12 }} />
-                  <YAxis />
-                  <RTooltip />
-                  <Bar dataKey="count" name="请求次数" fill="#1677ff" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+        <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
+          <Col xs={12} sm={6}>
+            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+              <Statistic
+                title={<span style={{ fontSize: 12 }}>总请求</span>}
+                value={stats.total_requests}
+                prefix={<ApiOutlined />}
+                valueStyle={{ fontSize: 20 }}
+              />
             </Card>
-          )}
-        </>
+          </Col>
+          <Col xs={12} sm={6}>
+            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+              <Statistic
+                title={<span style={{ fontSize: 12 }}>平均延迟</span>}
+                value={Math.round(stats.avg_latency_ms)}
+                suffix="ms"
+                prefix={<ThunderboltOutlined />}
+                valueStyle={{ fontSize: 20 }}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={6}>
+            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+              <Statistic
+                title={<span style={{ fontSize: 12 }}>成功率</span>}
+                value={successRate}
+                suffix="%"
+                prefix={<CheckCircleOutlined />}
+                valueStyle={{ fontSize: 20, color: successRate >= 95 ? '#52c41a' : successRate >= 80 ? '#faad14' : '#ff4d4f' }}
+              />
+            </Card>
+          </Col>
+          <Col xs={12} sm={6}>
+            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+              <Statistic
+                title={<span style={{ fontSize: 12 }}>错误</span>}
+                value={stats.error_count}
+                prefix={<WarningOutlined />}
+                valueStyle={{ fontSize: 20, color: stats.error_count > 0 ? '#ff4d4f' : undefined }}
+              />
+            </Card>
+          </Col>
+        </Row>
       )}
+
+      {/* Charts row */}
+      {stats && (stats.by_model.length > 0 || endpointData.length > 0) && (
+        <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+          {stats.by_model.length > 0 && (
+            <Col xs={24} lg={14}>
+              <Card title={<><FireOutlined /> 模型使用分布</>} size="small">
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={stats.by_model} layout="vertical" margin={{ left: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis type="number" />
+                    <YAxis dataKey="model" type="category" width={100} tick={{ fontSize: 11 }} />
+                    <RTooltip />
+                    <Bar dataKey="count" name="请求数" fill="#1677ff" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </Card>
+            </Col>
+          )}
+          {endpointData.length > 0 && (
+            <Col xs={24} lg={10}>
+              <Card title={<><GlobalOutlined /> 端点调用分布</>} size="small">
+                <ResponsiveContainer width="100%" height={200}>
+                  <PieChart>
+                    <Pie
+                      data={endpointData}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={70}
+                      label={({ name, percent }: any) => `${name || ''} ${((percent || 0) * 100).toFixed(0)}%`}
+                      labelLine={{ strokeWidth: 1 }}
+                    >
+                      {endpointData.map((_, i) => (
+                        <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <RTooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </Card>
+            </Col>
+          )}
+        </Row>
+      )}
+
+      {/* Request logs */}
+      <Card
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <ClockCircleOutlined />
+            <span>请求日志</span>
+            <Tag>{logs.length} 条</Tag>
+          </div>
+        }
+        size="small"
+        extra={
+          <Segmented
+            size="small"
+            value={logFilter}
+            onChange={(v) => setLogFilter(v as string)}
+            options={[
+              { label: '全部', value: 'all' },
+              { label: '流式', value: 'stream' },
+              { label: '错误', value: 'errors' },
+            ]}
+          />
+        }
+      >
+        <Table
+          dataSource={filteredLogs}
+          columns={logColumns}
+          rowKey="id"
+          size="small"
+          pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
+          scroll={{ x: 740 }}
+          locale={{ emptyText: '暂无请求记录' }}
+        />
+      </Card>
     </div>
   );
 };

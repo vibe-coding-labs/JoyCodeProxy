@@ -38,7 +38,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../joycode_proxy/static',
+    outDir: '../cmd/JoyCodeProxy/static',
     emptyOutDir: true,
   },
 });

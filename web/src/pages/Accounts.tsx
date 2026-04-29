@@ -8,6 +8,8 @@ import {
   SafetyCertificateOutlined, ReloadOutlined,
   QuestionCircleOutlined,
 } from '@ant-design/icons';
+import SvgClaudeCode from '../components/ClaudeCodeIcon';
+import SvgCodex from '../components/CodexIcon';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { Account } from '../api';
@@ -22,6 +24,34 @@ const BUILTIN_MODELS = [
   { label: 'MiniMax-M2.7', value: 'MiniMax-M2.7' },
   { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
 ];
+
+const getBaseURL = () => `http://${window.location.host}`;
+
+const claudeCodeCmd = (apiKey: string, model = 'GLM-5.1') => [
+  `API_TIMEOUT_MS=6000000 \\`,
+  `CLAUDE_CODE_MAX_RETRIES=1000000 \\`,
+  `ANTHROPIC_BASE_URL=${getBaseURL()} \\`,
+  `ANTHROPIC_API_KEY="${apiKey}" \\`,
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS=6553655 \\`,
+  `ANTHROPIC_MODEL=${model} \\`,
+  `claude --dangerously-skip-permissions`,
+].join('\n');
+
+const codexCmd = (apiKey: string, model = 'GLM-5.1') => [
+  `OPENAI_BASE_URL=${getBaseURL()}/v1 \\`,
+  `OPENAI_API_KEY="${apiKey}" \\`,
+  `OPENAI_MODEL=${model} \\`,
+  `codex`,
+].join('\n');
+
+const copyToClipboard = async (text: string, label: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    message.success(`${label} 命令已复制`);
+  } catch {
+    message.error('复制失败');
+  }
+};
 
 const Accounts: React.FC = () => {
   const navigate = useNavigate();
@@ -77,6 +107,16 @@ const Accounts: React.FC = () => {
     }
   };
 
+  const handleRenewToken = async (apiKey: string) => {
+    try {
+      await api.renewToken(apiKey);
+      message.success('API Token 已更新');
+      fetchAccounts();
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '更新 Token 失败');
+    }
+  };
+
   const handleValidate = async (apiKey: string) => {
     setValidating(apiKey);
     try {
@@ -95,10 +135,20 @@ const Accounts: React.FC = () => {
 
   const columns = [
     {
-      title: '路由密钥 (API Key)',
+      title: '账户名',
       dataIndex: 'api_key',
       key: 'api_key',
-      render: (text: string) => <Typography.Text code>{text}</Typography.Text>,
+      render: (text: string) => <Typography.Text strong>{text}</Typography.Text>,
+    },
+    {
+      title: 'API Token',
+      dataIndex: 'api_token',
+      key: 'api_token',
+      render: (token: string) => (
+        <Typography.Text code copyable style={{ fontSize: 12 }}>
+          {token.slice(0, 12)}...{token.slice(-4)}
+        </Typography.Text>
+      ),
     },
     {
       title: '用户 ID',
@@ -118,6 +168,31 @@ const Accounts: React.FC = () => {
       render: (val: string) => val ? <Tag color="green">{val}</Tag> : <Typography.Text type="secondary">未设置</Typography.Text>,
     },
     {
+      title: '快速启动',
+      key: 'quickstart',
+      width: 90,
+      render: (_: unknown, record: Account) => (
+        <Space size={4}>
+          <Tooltip title={`复制 Claude Code 命令`}>
+            <Button
+              type="text"
+              size="small"
+              icon={<SvgClaudeCode />}
+              onClick={(e) => { e.stopPropagation(); copyToClipboard(claudeCodeCmd(record.api_token, record.default_model || undefined), 'Claude Code'); }}
+            />
+          </Tooltip>
+          <Tooltip title={`复制 Codex 命令`}>
+            <Button
+              type="text"
+              size="small"
+              icon={<SvgCodex />}
+              onClick={(e) => { e.stopPropagation(); copyToClipboard(codexCmd(record.api_token, record.default_model || undefined), 'Codex'); }}
+            />
+          </Tooltip>
+        </Space>
+      ),
+    },
+    {
       title: '操作',
       key: 'actions',
       render: (_: unknown, record: Account) => (
@@ -127,6 +202,13 @@ const Accounts: React.FC = () => {
               <StarOutlined /> 设为默认
             </Button>
           )}
+          <Popconfirm
+            title="确定要重置 API Token 吗？"
+            description="重置后旧 Token 将立即失效"
+            onConfirm={() => handleRenewToken(record.api_key)}
+          >
+            <Button size="small">重置 Token</Button>
+          </Popconfirm>
           <Button
             size="small"
             onClick={() => handleValidate(record.api_key)}
