@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -93,10 +94,12 @@ func (c *Client) prepareBody(extra map[string]interface{}) map[string]interface{
 func (c *Client) doPost(endpoint string, body map[string]interface{}) (*http.Response, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
+		slog.Error("marshal request body", "endpoint", endpoint, "error", err)
 		return nil, err
 	}
 	req, err := http.NewRequest("POST", BaseURL+endpoint, bytes.NewReader(data))
 	if err != nil {
+		slog.Error("create request", "endpoint", endpoint, "error", err)
 		return nil, err
 	}
 	req.Header = c.headers()
@@ -120,17 +123,21 @@ func decodeBody(resp *http.Response) ([]byte, error) {
 func (c *Client) Post(endpoint string, body map[string]interface{}) (map[string]interface{}, error) {
 	resp, err := c.doPost(endpoint, c.prepareBody(body))
 	if err != nil {
+		slog.Error("upstream request failed", "endpoint", endpoint, "error", err)
 		return nil, err
 	}
 	data, err := decodeBody(resp)
 	if err != nil {
+		slog.Error("decode upstream response", "endpoint", endpoint, "status", resp.StatusCode, "error", err)
 		return nil, err
 	}
 	if resp.StatusCode != 200 {
+		slog.Error("upstream non-200", "endpoint", endpoint, "status", resp.StatusCode, "body", truncate(string(data), 500))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(data))
 	}
 	var result map[string]interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
+		slog.Error("unmarshal upstream response", "endpoint", endpoint, "error", err)
 		return nil, fmt.Errorf("invalid JSON response: %w", err)
 	}
 	return result, nil
@@ -139,11 +146,13 @@ func (c *Client) Post(endpoint string, body map[string]interface{}) (map[string]
 func (c *Client) PostStream(endpoint string, body map[string]interface{}) (*http.Response, error) {
 	resp, err := c.doPost(endpoint, c.prepareBody(body))
 	if err != nil {
+		slog.Error("upstream stream connect", "endpoint", endpoint, "error", err)
 		return nil, err
 	}
 	if resp.StatusCode != 200 {
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(resp.Body)
+		slog.Error("upstream stream non-200", "endpoint", endpoint, "status", resp.StatusCode, "body", truncate(string(data), 500))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(data))
 	}
 	return resp, nil
@@ -211,4 +220,11 @@ func (c *Client) Validate() error {
 		return fmt.Errorf("credential validation failed (code=%.0f): %s", code, msg)
 	}
 	return nil
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
