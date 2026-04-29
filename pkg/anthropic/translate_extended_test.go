@@ -271,8 +271,8 @@ func TestTranslateResponse_NormalText(t *testing.T) {
 	if resp.Role != "assistant" {
 		t.Errorf("Role = %q, want assistant", resp.Role)
 	}
-	if resp.StopReason != "end_turn" {
-		t.Errorf("StopReason = %q, want end_turn", resp.StopReason)
+	if resp.StopReason == nil || *resp.StopReason != "end_turn" {
+		t.Errorf("StopReason = %v, want end_turn", resp.StopReason)
 	}
 	if len(resp.Content) != 1 || resp.Content[0].Type != "text" {
 		t.Fatalf("Content unexpected: %v", resp.Content)
@@ -314,8 +314,8 @@ func TestTranslateResponse_ToolUse(t *testing.T) {
 	}
 	resp := TranslateResponse(jcResp, "claude-sonnet-4")
 
-	if resp.StopReason != "tool_use" {
-		t.Errorf("StopReason = %q, want tool_use", resp.StopReason)
+	if resp.StopReason == nil || *resp.StopReason != "tool_use" {
+		t.Errorf("StopReason = %v, want tool_use", resp.StopReason)
 	}
 	if len(resp.Content) != 1 {
 		t.Fatalf("len(Content) = %d, want 1", len(resp.Content))
@@ -353,8 +353,8 @@ func TestTranslateResponse_EmptyChoices(t *testing.T) {
 	if resp.Content[0].Text != "" {
 		t.Errorf("Content text = %q, want empty string", resp.Content[0].Text)
 	}
-	if resp.StopReason != "end_turn" {
-		t.Errorf("StopReason = %q, want end_turn", resp.StopReason)
+	if resp.StopReason == nil || *resp.StopReason != "end_turn" {
+		t.Errorf("StopReason = %v, want end_turn", resp.StopReason)
 	}
 }
 
@@ -473,8 +473,8 @@ func TestTranslateResponse_MultipleToolCalls(t *testing.T) {
 	if resp.Content[1].Name != "search" {
 		t.Errorf("Content[1].Name = %q, want search", resp.Content[1].Name)
 	}
-	if resp.StopReason != "tool_use" {
-		t.Errorf("StopReason = %q, want tool_use", resp.StopReason)
+	if resp.StopReason == nil || *resp.StopReason != "tool_use" {
+		t.Errorf("StopReason = %v, want tool_use", resp.StopReason)
 	}
 }
 

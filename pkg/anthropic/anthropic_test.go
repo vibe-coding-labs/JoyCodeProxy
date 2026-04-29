@@ -96,8 +96,8 @@ func TestTranslateResponse(t *testing.T) {
 	if resp.Model != "claude-sonnet-4-20250514" {
 		t.Errorf("Model = %q, want claude-sonnet-4-20250514", resp.Model)
 	}
-	if resp.StopReason != "end_turn" {
-		t.Errorf("StopReason = %q, want end_turn", resp.StopReason)
+	if resp.StopReason == nil || *resp.StopReason != "end_turn" {
+		t.Errorf("StopReason = %v, want end_turn", resp.StopReason)
 	}
 	if len(resp.Content) != 1 || resp.Content[0].Type != "text" {
 		t.Errorf("Content = %v, unexpected", resp.Content)

@@ -41,12 +41,16 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	var req MessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("Failed to decode request: %v", err)
 		writeAnthropicError(w, 400, "invalid JSON: "+err.Error())
 		return
 	}
 	if req.MaxTokens <= 0 {
 		req.MaxTokens = 8192
 	}
+
+	log.Printf("[anthropic] model=%s stream=%v max_tokens=%d msgs=%d tools=%d",
+		req.Model, req.Stream, req.MaxTokens, len(req.Messages), len(req.Tools))
 
 	if req.Stream {
 		h.handleStream(w, &req)
@@ -83,7 +87,12 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 	jcBody["stream"] = true
 	resp, err := h.Client.PostStream(chatEndpoint, jcBody)
 	if err != nil {
-		log.Printf("Stream error: %v", err)
+		log.Printf("Stream connect error: %v", err)
+		FormatSSE(w, "error", map[string]interface{}{
+			"type":  "error",
+			"error": map[string]string{"type": "api_error", "message": err.Error()},
+		})
+		flusher.Flush()
 		return
 	}
 	defer resp.Body.Close()
@@ -92,7 +101,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 	model := req.Model
 	totalOutput := 0
 
-	// message_start
+	// message_start — StopReason is nil (null in JSON) since stream hasn't finished
 	FormatSSE(w, "message_start", sseMessageStart{
 		Type: "message_start",
 		Message: MessageResponse{
@@ -142,7 +151,6 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 			toolCalls[idx].Arguments += tc.Function.Arguments
 
 			if !toolBlockStarted[idx] {
-				// End text block if it was started
 				if textBlockStarted {
 					FormatSSE(w, "content_block_stop", sseContentBlockStop{
 						Type: "content_block_stop", Index: currentBlockIndex,
@@ -159,9 +167,10 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 					Type:  "content_block_start",
 					Index: currentBlockIndex,
 					ContentBlock: ContentBlock{
-						Type: "tool_use",
-						ID:   tcID,
-						Name: toolCalls[idx].Name,
+						Type:  "tool_use",
+						ID:    tcID,
+						Name:  toolCalls[idx].Name,
+						Input: json.RawMessage("{}"),
 					},
 				})
 				flusher.Flush()
@@ -192,7 +201,6 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 		// Handle finish
 		if choice.FinishReason != nil {
 			fr := *choice.FinishReason
-			// Close any open text block
 			if textBlockStarted {
 				FormatSSE(w, "content_block_stop", sseContentBlockStop{
 					Type: "content_block_stop", Index: currentBlockIndex,
@@ -200,15 +208,14 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 				currentBlockIndex++
 				textBlockStarted = false
 			}
-			// Close and flush tool call blocks with input_json_delta
+			// Close tool call blocks with input_json_delta using partial_json
 			for i := 0; i < len(toolCalls); i++ {
 				tc := toolCalls[i]
 				if toolBlockStarted[i] {
-					// Send the accumulated arguments as input_json_delta
 					FormatSSE(w, "content_block_delta", sseContentBlockDelta{
 						Type:  "content_block_delta",
 						Index: currentBlockIndex,
-						Delta: deltaText{Type: "input_json_delta", Text: tc.Arguments},
+						Delta: deltaText{Type: "input_json_delta", PartialJSON: tc.Arguments},
 					})
 					FormatSSE(w, "content_block_stop", sseContentBlockStop{
 						Type: "content_block_stop", Index: currentBlockIndex,
@@ -232,6 +239,35 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 			FormatSSE(w, "message_stop", sseMessageStop{Type: "message_stop"})
 			flusher.Flush()
 		}
+	}
+
+	// Handle scanner errors AFTER the loop exits
+	if err := scanner.Err(); err != nil {
+		log.Printf("Stream scanner error: %v", err)
+		if textBlockStarted {
+			FormatSSE(w, "content_block_stop", sseContentBlockStop{
+				Type: "content_block_stop", Index: currentBlockIndex,
+			})
+			currentBlockIndex++
+		}
+		for i := 0; i < len(toolCalls); i++ {
+			if toolBlockStarted[i] {
+				FormatSSE(w, "content_block_stop", sseContentBlockStop{
+					Type: "content_block_stop", Index: currentBlockIndex,
+				})
+				currentBlockIndex++
+			}
+		}
+		endTurn := "end_turn"
+		FormatSSE(w, "message_delta", sseMessageDelta{
+			Type:  "message_delta",
+			Delta: deltaStop{StopReason: endTurn},
+			Usage: struct {
+				OutputTokens int `json:"output_tokens"`
+			}{OutputTokens: totalOutput / 4},
+		})
+		FormatSSE(w, "message_stop", sseMessageStop{Type: "message_stop"})
+		flusher.Flush()
 	}
 }
 

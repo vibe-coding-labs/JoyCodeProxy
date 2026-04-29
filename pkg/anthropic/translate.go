@@ -63,7 +63,7 @@ func TranslateResponse(jcResp map[string]interface{}, reqModel string) *MessageR
 		return &MessageResponse{
 			ID: msgID, Type: "message", Role: "assistant",
 			Model: reqModel, Content: []ContentBlock{{Type: "text", Text: ""}},
-			StopReason: "end_turn", Usage: usage,
+			StopReason: strPtr("end_turn"), Usage: usage,
 		}
 	}
 	choice, _ := choices[0].(map[string]interface{})
@@ -105,7 +105,7 @@ func TranslateResponse(jcResp map[string]interface{}, reqModel string) *MessageR
 		Role:       "assistant",
 		Model:      reqModel,
 		Content:    content,
-		StopReason: stopReason,
+		StopReason: &stopReason,
 		Usage:      usage,
 	}
 }
@@ -184,6 +184,8 @@ func newID() string {
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+func strPtr(s string) *string { return &s }
 
 // NewMessageID generates a message ID in Anthropic format.
 func NewMessageID() string {

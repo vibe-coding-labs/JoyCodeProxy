@@ -48,7 +48,7 @@ type MessageResponse struct {
 	Role         string         `json:"role"`
 	Content      []ContentBlock `json:"content"`
 	Model        string         `json:"model"`
-	StopReason   string         `json:"stop_reason"`
+	StopReason   *string        `json:"stop_reason"`
 	StopSequence *string        `json:"stop_sequence"`
 	Usage        Usage          `json:"usage"`
 }
@@ -56,7 +56,7 @@ type MessageResponse struct {
 // ContentBlock is a single content block in the response.
 type ContentBlock struct {
 	Type  string `json:"type"`
-	Text  string `json:"text,omitempty"`
+	Text  string `json:"text"`
 	ID    string `json:"id,omitempty"`
 	Name  string `json:"name,omitempty"`
 	Input any    `json:"input,omitempty"`
@@ -88,8 +88,9 @@ type sseContentBlockDelta struct {
 }
 
 type deltaText struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type         string `json:"type"`
+	Text         string `json:"text,omitempty"`
+	PartialJSON  string `json:"partial_json,omitempty"`
 }
 
 type sseContentBlockStop struct {

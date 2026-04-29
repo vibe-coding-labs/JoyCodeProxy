@@ -44,7 +44,7 @@ func NewClient(ptKey, userID string) *Client {
 		PtKey:      ptKey,
 		UserID:     userID,
 		SessionID:  newHexID(),
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+		httpClient: &http.Client{Timeout: 30 * time.Minute},
 	}
 }
 
