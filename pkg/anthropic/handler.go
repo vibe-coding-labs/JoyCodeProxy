@@ -3,8 +3,12 @@ package anthropic
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 )
@@ -48,6 +52,9 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if req.MaxTokens <= 0 {
 		req.MaxTokens = 8192
 	}
+	if req.MaxTokens > 32768 {
+		req.MaxTokens = 32768
+	}
 
 	log.Printf("[anthropic] model=%s stream=%v max_tokens=%d msgs=%d tools=%d",
 		req.Model, req.Stream, req.MaxTokens, len(req.Messages), len(req.Tools))
@@ -61,13 +68,49 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleNonStream(w http.ResponseWriter, req *MessageRequest) {
 	jcBody := TranslateRequest(req)
-	jcResp, err := h.Client.Post(chatEndpoint, jcBody)
-	if err != nil {
-		writeAnthropicError(w, 500, err.Error())
+	const maxRetries = 3
+	var jcResp map[string]interface{}
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		jcResp, lastErr = h.Client.Post(chatEndpoint, jcBody)
+		if lastErr != nil {
+			log.Printf("[non-stream] attempt %d/%d error: %v", attempt, maxRetries, lastErr)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			}
+			continue
+		}
+		break
+	}
+
+	if lastErr != nil {
+		writeAnthropicError(w, 500, lastErr.Error())
 		return
 	}
 	resp := TranslateResponse(jcResp, req.Model)
 	writeAnthropicJSON(w, 200, resp)
+}
+
+// prependReader replays a buffered first line before reading from the underlying source.
+type prependReader struct {
+	first  []byte
+	offset int
+	source io.Reader
+	body   io.ReadCloser
+}
+
+func (r *prependReader) Read(p []byte) (int, error) {
+	if r.offset < len(r.first) {
+		n := copy(p, r.first[r.offset:])
+		r.offset += n
+		return n, nil
+	}
+	return r.source.Read(p)
+}
+
+func (r *prependReader) Close() error {
+	return r.body.Close()
 }
 
 func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
@@ -77,31 +120,30 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 		return
 	}
 
+	jcBody := TranslateRequest(req)
+	jcBody["stream"] = true
+	log.Printf("[stream] model=%s max_tokens=%v", jcBody["model"], jcBody["max_tokens"])
+
+	// Connect with retry BEFORE committing response headers
+	resp, err := h.connectStreamWithRetry(jcBody)
+	if err != nil {
+		log.Printf("Stream failed after retries: %v", err)
+		writeAnthropicError(w, 500, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	// Commit response headers only after upstream confirmed valid
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(200)
 
-	jcBody := TranslateRequest(req)
-	jcBody["stream"] = true
-	resp, err := h.Client.PostStream(chatEndpoint, jcBody)
-	if err != nil {
-		log.Printf("Stream connect error: %v", err)
-		FormatSSE(w, "error", map[string]interface{}{
-			"type":  "error",
-			"error": map[string]string{"type": "api_error", "message": err.Error()},
-		})
-		flusher.Flush()
-		return
-	}
-	defer resp.Body.Close()
-
 	msgID := NewMessageID()
 	model := req.Model
 	totalOutput := 0
 
-	// message_start — StopReason is nil (null in JSON) since stream hasn't finished
 	FormatSSE(w, "message_start", sseMessageStart{
 		Type: "message_start",
 		Message: MessageResponse{
@@ -112,7 +154,6 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 	FormatSSE(w, "ping", ssePing{Type: "ping"})
 	flusher.Flush()
 
-	// Track in-progress tool calls: index -> accumulated data
 	type toolCallAccum struct {
 		ID        string
 		Name      string
@@ -125,15 +166,17 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	chunkCount := 0
+
 	for scanner.Scan() {
 		line := scanner.Text()
+		chunkCount++
 		chunk := ParseStreamChunk(line)
 		if chunk == nil || len(chunk.Choices) == 0 {
 			continue
 		}
 		choice := chunk.Choices[0]
 
-		// Process tool_calls deltas
 		for _, tc := range choice.Delta.ToolCalls {
 			idx := tc.Index
 			if _, exists := toolCalls[idx]; !exists {
@@ -177,7 +220,6 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 			}
 		}
 
-		// Process text content
 		text := choice.Delta.Content
 		if text != "" {
 			if !textBlockStarted {
@@ -198,9 +240,9 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 			flusher.Flush()
 		}
 
-		// Handle finish
 		if choice.FinishReason != nil {
 			fr := *choice.FinishReason
+			log.Printf("[stream] done: %d chunks, reason=%s, tools=%d", chunkCount, fr, len(toolCalls))
 			if textBlockStarted {
 				FormatSSE(w, "content_block_stop", sseContentBlockStop{
 					Type: "content_block_stop", Index: currentBlockIndex,
@@ -208,7 +250,6 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 				currentBlockIndex++
 				textBlockStarted = false
 			}
-			// Close tool call blocks with input_json_delta using partial_json
 			for i := 0; i < len(toolCalls); i++ {
 				tc := toolCalls[i]
 				if toolBlockStarted[i] {
@@ -228,7 +269,6 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 			if fr == "tool_calls" {
 				stopReason = "tool_use"
 			}
-
 			FormatSSE(w, "message_delta", sseMessageDelta{
 				Type:  "message_delta",
 				Delta: deltaStop{StopReason: stopReason},
@@ -241,7 +281,6 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 		}
 	}
 
-	// Handle scanner errors AFTER the loop exits
 	if err := scanner.Err(); err != nil {
 		log.Printf("Stream scanner error: %v", err)
 		if textBlockStarted {
@@ -258,10 +297,9 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 				currentBlockIndex++
 			}
 		}
-		endTurn := "end_turn"
 		FormatSSE(w, "message_delta", sseMessageDelta{
 			Type:  "message_delta",
-			Delta: deltaStop{StopReason: endTurn},
+			Delta: deltaStop{StopReason: "end_turn"},
 			Usage: struct {
 				OutputTokens int `json:"output_tokens"`
 			}{OutputTokens: totalOutput / 4},
@@ -269,6 +307,87 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 		FormatSSE(w, "message_stop", sseMessageStop{Type: "message_stop"})
 		flusher.Flush()
 	}
+}
+
+// connectStreamWithRetry attempts to connect to upstream with retries.
+// Peeks at the first SSE line to detect errors before returning the response.
+func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}) (*http.Response, error) {
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		resp, err := h.Client.PostStream(chatEndpoint, jcBody)
+		if err != nil {
+			lastErr = err
+			log.Printf("[stream] attempt %d/%d connect error: %v", attempt, maxRetries, err)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			}
+			continue
+		}
+
+		br := bufio.NewReaderSize(resp.Body, 64*1024)
+		firstLine, err := br.ReadString('\n')
+		if err != nil {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("read first line: %w", err)
+			log.Printf("[stream] attempt %d/%d read error: %v", attempt, maxRetries, lastErr)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			}
+			continue
+		}
+
+		trimmed := strings.TrimSpace(firstLine)
+		dataContent := strings.TrimPrefix(trimmed, "data: ")
+		if isUpstreamError(dataContent) {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("upstream error: %s", truncate(dataContent, 200))
+			log.Printf("[stream] attempt %d/%d upstream error: %s", attempt, maxRetries, truncate(dataContent, 200))
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			}
+			continue
+		}
+
+		// Wrap body to replay first line for the scanner
+		originalBody := resp.Body
+		resp.Body = &prependReader{
+			first:  []byte(firstLine),
+			source: br,
+			body:   originalBody,
+		}
+		log.Printf("[stream] connected on attempt %d", attempt)
+		return resp, nil
+	}
+	return nil, fmt.Errorf("stream failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+func isUpstreamError(line string) bool {
+	if line == "" || line == "[DONE]" {
+		return false
+	}
+	var parsed struct {
+		Choices []interface{} `json:"choices"`
+		Error   interface{}   `json:"error"`
+		Code    interface{}   `json:"code"`
+		Status  string        `json:"status"`
+		Msg     string        `json:"msg"`
+	}
+	if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+		return false
+	}
+	if len(parsed.Choices) > 0 {
+		return false
+	}
+	return parsed.Error != nil || parsed.Code != nil || parsed.Status != "" || parsed.Msg != ""
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 func writeAnthropicJSON(w http.ResponseWriter, code int, v interface{}) {

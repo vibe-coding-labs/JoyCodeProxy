@@ -122,6 +122,19 @@ func resolveModel(model string) string {
 	return joycode.DefaultModel
 }
 
+// contentBlock represents a single content block in Anthropic format.
+type contentBlock struct {
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+
+	// tool_result fields
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+}
+
 func buildMessages(req *MessageRequest) []map[string]interface{} {
 	msgs := make([]map[string]interface{}, 0, len(req.Messages)+1)
 
@@ -133,11 +146,147 @@ func buildMessages(req *MessageRequest) []map[string]interface{} {
 		}
 	}
 	for _, m := range req.Messages {
-		msgs = append(msgs, map[string]interface{}{
-			"role": m.Role, "content": parseContent(m.Content),
-		})
+		converted := convertMessage(m.Role, m.Content)
+		msgs = append(msgs, converted)
 	}
 	return msgs
+}
+
+// convertMessage converts a single Anthropic message to OpenAI format.
+func convertMessage(role string, raw json.RawMessage) map[string]interface{} {
+	// Try simple string content first
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return map[string]interface{}{"role": role, "content": s}
+	}
+
+	// Try as content blocks
+	var blocks []contentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return map[string]interface{}{"role": role, "content": string(raw)}
+	}
+
+	switch role {
+	case "assistant":
+		return convertAssistantBlocks(blocks)
+	case "user":
+		return convertUserBlocks(blocks)
+	default:
+		return map[string]interface{}{"role": role, "content": extractText(blocks)}
+	}
+}
+
+// convertAssistantBlocks handles assistant messages with tool_use blocks.
+func convertAssistantBlocks(blocks []contentBlock) map[string]interface{} {
+	textParts := []string{}
+	toolCalls := []interface{}{}
+
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			textParts = append(textParts, b.Text)
+		case "tool_use":
+			args := "{}"
+			if len(b.Input) > 0 {
+				args = string(b.Input)
+			}
+			id := b.ID
+			if id == "" {
+				id = "call_" + newID()
+			}
+			toolCalls = append(toolCalls, map[string]interface{}{
+				"id":   id,
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      b.Name,
+					"arguments": args,
+				},
+			})
+		}
+	}
+
+	msg := map[string]interface{}{
+		"role":      "assistant",
+		"content":   strings.Join(textParts, "\n"),
+	}
+	if len(toolCalls) > 0 {
+		msg["tool_calls"] = toolCalls
+		if msg["content"] == "" {
+			msg["content"] = nil
+		}
+	}
+	return msg
+}
+
+// convertUserBlocks handles user messages that may contain tool_result blocks.
+// tool_result blocks must be converted to separate "tool" role messages in OpenAI format.
+func convertUserBlocks(blocks []contentBlock) map[string]interface{} {
+	// If all blocks are text, keep as single user message
+	textParts := []string{}
+	hasToolResult := false
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			hasToolResult = true
+			break
+		}
+		if b.Type == "text" {
+			textParts = append(textParts, b.Text)
+		}
+	}
+
+	if !hasToolResult {
+		return map[string]interface{}{"role": "user", "content": strings.Join(textParts, "\n")}
+	}
+
+	// Mix of text and tool_result — return a special marker.
+	// The caller must handle this by expanding into multiple messages.
+	// For simplicity, we serialize tool_results into text format.
+	// This is a limitation but handles the common case.
+	parts := []string{}
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			parts = append(parts, b.Text)
+		case "tool_result":
+			resultText := extractToolResultContent(b.Content)
+			parts = append(parts, fmt.Sprintf("[Tool Result (%s)]: %s", b.ToolUseID, resultText))
+		}
+	}
+	return map[string]interface{}{"role": "user", "content": strings.Join(parts, "\n")}
+}
+
+func extractToolResultContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		parts := make([]string, 0, len(blocks))
+		for _, b := range blocks {
+			if b.Type == "text" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return string(raw)
+}
+
+func extractText(blocks []contentBlock) string {
+	parts := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		if b.Type == "text" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func parseContent(raw json.RawMessage) string {
