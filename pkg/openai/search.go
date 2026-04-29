@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 )
 
@@ -13,6 +14,7 @@ func (s *Server) handleWebSearch(w http.ResponseWriter, r *http.Request) {
 		Query string `json:"query"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		slog.Error("decode search request", "error", err)
 		writeError(w, 400, "invalid JSON")
 		return
 	}
@@ -20,8 +22,9 @@ func (s *Server) handleWebSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "query is required")
 		return
 	}
-	results, err := s.Client.WebSearch(body.Query)
+	results, err := s.getClient(r).WebSearch(body.Query)
 	if err != nil {
+		slog.Error("web search upstream error", "query", body.Query, "error", err)
 		writeError(w, 500, err.Error())
 		return
 	}
@@ -38,6 +41,7 @@ func (s *Server) handleRerank(w http.ResponseWriter, r *http.Request) {
 		TopN      int      `json:"top_n"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		slog.Error("decode rerank request", "error", err)
 		writeError(w, 400, "invalid JSON")
 		return
 	}
@@ -45,8 +49,9 @@ func (s *Server) handleRerank(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "query and documents are required")
 		return
 	}
-	result, err := s.Client.Rerank(body.Query, body.Documents, body.TopN)
+	result, err := s.getClient(r).Rerank(body.Query, body.Documents, body.TopN)
 	if err != nil {
+		slog.Error("rerank upstream error", "query", body.Query, "error", err)
 		writeError(w, 500, err.Error())
 		return
 	}

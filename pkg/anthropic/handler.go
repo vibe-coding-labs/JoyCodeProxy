@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -15,14 +15,25 @@ import (
 
 const chatEndpoint = "/api/saas/openai/v1/chat/completions"
 
+// ClientResolver returns the appropriate joycode.Client for a request.
+type ClientResolver func(r *http.Request) *joycode.Client
+
 // Handler serves the Anthropic Messages API.
 type Handler struct {
-	Client *joycode.Client
+	Client   *joycode.Client
+	Resolver ClientResolver
 }
 
 // NewHandler creates a new Anthropic API handler.
 func NewHandler(c *joycode.Client) *Handler {
 	return &Handler{Client: c}
+}
+
+func (h *Handler) getClient(r *http.Request) *joycode.Client {
+	if h.Resolver != nil {
+		return h.Resolver(r)
+	}
+	return h.Client
 }
 
 // RegisterRoutes registers the Anthropic Messages API endpoint.
@@ -45,7 +56,7 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	var req MessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Failed to decode request: %v", err)
+		slog.Error("decode anthropic request", "error", err)
 		writeAnthropicError(w, 400, "invalid JSON: "+err.Error())
 		return
 	}
@@ -56,26 +67,27 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		req.MaxTokens = 32768
 	}
 
-	log.Printf("[anthropic] model=%s stream=%v max_tokens=%d msgs=%d tools=%d",
-		req.Model, req.Stream, req.MaxTokens, len(req.Messages), len(req.Tools))
+	slog.Info("anthropic request", "model", req.Model, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
+
+	client := h.getClient(r)
 
 	if req.Stream {
-		h.handleStream(w, &req)
+		h.handleStream(w, &req, client)
 	} else {
-		h.handleNonStream(w, &req)
+		h.handleNonStream(w, &req, client)
 	}
 }
 
-func (h *Handler) handleNonStream(w http.ResponseWriter, req *MessageRequest) {
+func (h *Handler) handleNonStream(w http.ResponseWriter, req *MessageRequest, client *joycode.Client) {
 	jcBody := TranslateRequest(req)
 	const maxRetries = 3
 	var jcResp map[string]interface{}
 	var lastErr error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		jcResp, lastErr = h.Client.Post(chatEndpoint, jcBody)
+		jcResp, lastErr = client.Post(chatEndpoint, jcBody)
 		if lastErr != nil {
-			log.Printf("[non-stream] attempt %d/%d error: %v", attempt, maxRetries, lastErr)
+			slog.Error("non-stream retry error", "attempt", attempt, "max", maxRetries, "error", lastErr)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -113,7 +125,7 @@ func (r *prependReader) Close() error {
 	return r.body.Close()
 }
 
-func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
+func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, client *joycode.Client) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeAnthropicError(w, 500, "streaming not supported")
@@ -122,12 +134,12 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 
 	jcBody := TranslateRequest(req)
 	jcBody["stream"] = true
-	log.Printf("[stream] model=%s max_tokens=%v", jcBody["model"], jcBody["max_tokens"])
+	slog.Debug("stream starting", "model", jcBody["model"], "max_tokens", jcBody["max_tokens"])
 
 	// Connect with retry BEFORE committing response headers
-	resp, err := h.connectStreamWithRetry(jcBody)
+	resp, err := h.connectStreamWithRetry(jcBody, client)
 	if err != nil {
-		log.Printf("Stream failed after retries: %v", err)
+		slog.Error("stream failed after retries", "error", err)
 		writeAnthropicError(w, 500, err.Error())
 		return
 	}
@@ -242,7 +254,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 
 		if choice.FinishReason != nil {
 			fr := *choice.FinishReason
-			log.Printf("[stream] done: %d chunks, reason=%s, tools=%d", chunkCount, fr, len(toolCalls))
+			slog.Info("stream completed", "chunks", chunkCount, "reason", fr, "tools", len(toolCalls))
 			if textBlockStarted {
 				FormatSSE(w, "content_block_stop", sseContentBlockStop{
 					Type: "content_block_stop", Index: currentBlockIndex,
@@ -282,7 +294,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("Stream scanner error: %v", err)
+		slog.Error("stream scanner error", "error", err)
 		if textBlockStarted {
 			FormatSSE(w, "content_block_stop", sseContentBlockStop{
 				Type: "content_block_stop", Index: currentBlockIndex,
@@ -311,15 +323,15 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest) {
 
 // connectStreamWithRetry attempts to connect to upstream with retries.
 // Peeks at the first SSE line to detect errors before returning the response.
-func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}) (*http.Response, error) {
+func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}, client *joycode.Client) (*http.Response, error) {
 	const maxRetries = 3
 	var lastErr error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		resp, err := h.Client.PostStream(chatEndpoint, jcBody)
+		resp, err := client.PostStream(chatEndpoint, jcBody)
 		if err != nil {
 			lastErr = err
-			log.Printf("[stream] attempt %d/%d connect error: %v", attempt, maxRetries, err)
+			slog.Error("stream connect error", "attempt", attempt, "max", maxRetries, "error", err)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -331,7 +343,7 @@ func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}) (*http.R
 		if err != nil {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("read first line: %w", err)
-			log.Printf("[stream] attempt %d/%d read error: %v", attempt, maxRetries, lastErr)
+			slog.Error("stream read first line", "attempt", attempt, "max", maxRetries, "error", lastErr)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -343,7 +355,7 @@ func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}) (*http.R
 		if isUpstreamError(dataContent) {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream error: %s", truncate(dataContent, 200))
-			log.Printf("[stream] attempt %d/%d upstream error: %s", attempt, maxRetries, truncate(dataContent, 200))
+			slog.Error("stream upstream error", "attempt", attempt, "max", maxRetries, "body", truncate(dataContent, 200))
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -357,7 +369,7 @@ func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}) (*http.R
 			source: br,
 			body:   originalBody,
 		}
-		log.Printf("[stream] connected on attempt %d", attempt)
+		slog.Debug("stream connected", "attempt", attempt)
 		return resp, nil
 	}
 	return nil, fmt.Errorf("stream failed after %d attempts: %w", maxRetries, lastErr)

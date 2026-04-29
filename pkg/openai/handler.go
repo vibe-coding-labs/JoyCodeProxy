@@ -2,19 +2,31 @@ package openai
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 )
 
+// ClientResolver returns the appropriate joycode.Client for a request.
+type ClientResolver func(r *http.Request) *joycode.Client
+
 // Server implements the OpenAI-compatible HTTP API.
 type Server struct {
-	Client *joycode.Client
+	Client   *joycode.Client
+	Resolver ClientResolver
 }
 
 // NewServer creates a new OpenAI-compatible proxy server.
 func NewServer(c *joycode.Client) *Server {
 	return &Server{Client: c}
+}
+
+func (s *Server) getClient(r *http.Request) *joycode.Client {
+	if s.Resolver != nil {
+		return s.Resolver(r)
+	}
+	return s.Client
 }
 
 // RegisterRoutes registers all OpenAI-compatible endpoints on the mux.
@@ -24,7 +36,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/web-search", s.handleWebSearch)
 	mux.HandleFunc("/v1/rerank", s.handleRerank)
 	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/", s.handleHealth)
 }
 
 func writeCORS(w http.ResponseWriter) {
@@ -88,8 +99,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if !requireGET(w, r) {
 		return
 	}
-	models, err := s.Client.ListModels()
+	models, err := s.getClient(r).ListModels()
 	if err != nil {
+		slog.Error("list models upstream error", "error", err)
 		writeError(w, 500, err.Error())
 		return
 	}

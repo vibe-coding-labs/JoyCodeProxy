@@ -3,7 +3,10 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 )
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -12,31 +15,33 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		slog.Error("decode chat request", "error", err)
 		writeError(w, 400, "invalid JSON")
 		return
 	}
 	model := DefaultModel(req.Model)
 	jcBody := TranslateRequest(&req)
+	client := s.getClient(r)
 	if req.Stream {
-		s.handleStreamChat(w, jcBody, model)
+		s.handleStreamChat(w, client, jcBody, model)
 	} else {
-		s.handleNonStreamChat(w, jcBody, model)
+		s.handleNonStreamChat(w, client, jcBody, model)
 	}
 }
 
-func (s *Server) handleNonStreamChat(w http.ResponseWriter, jcBody map[string]interface{}, model string) {
-	resp, err := s.Client.Post("/api/saas/openai/v1/chat/completions", jcBody)
+func (s *Server) handleNonStreamChat(w http.ResponseWriter, client *joycode.Client, jcBody map[string]interface{}, model string) {
+	resp, err := client.Post("/api/saas/openai/v1/chat/completions", jcBody)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		slog.Error("chat non-stream upstream error", "model", model, "error", err)
 		return
 	}
 	writeJSON(w, 200, TranslateResponse(resp, model))
 }
 
-func (s *Server) handleStreamChat(w http.ResponseWriter, jcBody map[string]interface{}, model string) {
+func (s *Server) handleStreamChat(w http.ResponseWriter, client *joycode.Client, jcBody map[string]interface{}, model string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, 500, "streaming not supported")
+		slog.Error("streaming not supported by response writer")
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -45,8 +50,9 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, jcBody map[string]inter
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(200)
 
-	resp, err := s.Client.PostStream("/api/saas/openai/v1/chat/completions", jcBody)
+	resp, err := client.PostStream("/api/saas/openai/v1/chat/completions", jcBody)
 	if err != nil {
+		slog.Error("chat stream upstream error", "model", model, "error", err)
 		fmt.Fprintf(w, "data: {\"error\":{\"message\":\"%s\"}}\n\n", err.Error())
 		flusher.Flush()
 		fmt.Fprint(w, "data: [DONE]\n\n")
@@ -64,6 +70,9 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, jcBody map[string]inter
 			flusher.Flush()
 		}
 		if readErr != nil {
+				if readErr.Error() != "EOF" {
+					slog.Error("chat stream read error", "model", model, "error", readErr)
+				}
 			break
 		}
 	}

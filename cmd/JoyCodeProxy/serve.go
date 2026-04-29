@@ -2,17 +2,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/anthropic"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/dashboard"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/openai"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
 
 var (
@@ -37,23 +44,79 @@ var serveCmd = &cobra.Command{
   # 跳过凭据验证（用于测试）
   joycode-proxy serve --skip-validation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// If running as daemon child, redirect logs to daemon log file
 		if os.Getenv("_JOYCODE_DAEMON_CHILD") == "1" {
 			runAsDaemonChild()
 		}
+
 		client, err := resolveClient()
 		if err != nil {
 			return err
 		}
+
+		// Open store for dashboard
+		s, err := store.Open("")
+		if err != nil {
+			log.Printf("Warning: dashboard store unavailable: %v", err)
+		}
+
+		// Migrate historical request_logs: map old api_keys to first account
+		if s != nil {
+			accounts, _ := s.ListAccounts()
+			if len(accounts) > 0 {
+				if n, err := s.ReassignLogs([]string{"", "joycode"}, accounts[0].APIKey); err == nil && n > 0 {
+					log.Printf("Migrated %d request logs to account %q", n, accounts[0].APIKey)
+				}
+			}
+		}
+
 		srv := openai.NewServer(client)
 		anth := anthropic.NewHandler(client)
+
+		// Per-request client resolution from database accounts
+		if s != nil {
+			resolver := func(r *http.Request) *joycode.Client {
+				apiKey := r.Header.Get("x-api-key")
+				if apiKey == "" {
+					auth := r.Header.Get("Authorization")
+					if strings.HasPrefix(auth, "Bearer ") {
+						apiKey = strings.TrimPrefix(auth, "Bearer ")
+					}
+				}
+				if apiKey != "" {
+					if account, _ := s.GetAccountByToken(apiKey); account != nil {
+						return joycode.NewClient(account.PtKey, account.UserID)
+					}
+					if account, _ := s.GetAccount(apiKey); account != nil {
+						return joycode.NewClient(account.PtKey, account.UserID)
+					}
+				}
+				if account, _ := s.GetDefaultAccount(); account != nil {
+					return joycode.NewClient(account.PtKey, account.UserID)
+				}
+				return client
+			}
+			srv.Resolver = resolver
+			anth.Resolver = resolver
+		}
+
 		mux := http.NewServeMux()
 		srv.RegisterRoutes(mux)
 		anth.RegisterRoutes(mux)
 
+		// Register dashboard API routes + static file serving
+		if s != nil {
+			subFS, _ := fs.Sub(staticFiles, "static")
+			dash := dashboard.NewHandler(s, subFS)
+			dash.RegisterRoutes(mux)
+			mux.HandleFunc("/", dash.ServeStatic)
+		}
+
 		var handler http.Handler = mux
+		if s != nil {
+			handler = requestLogMiddleware(mux, s)
+		}
 		if verbose {
-			handler = loggingMiddleware(mux)
+			handler = loggingMiddleware(handler)
 		}
 
 		addr := fmt.Sprintf("%s:%d", serveHost, servePort)
@@ -75,6 +138,9 @@ var serveCmd = &cobra.Command{
 			fmt.Println("    POST /v1/rerank            — Rerank documents")
 			fmt.Println("    GET  /v1/models            — Model list")
 			fmt.Println("    GET  /health               — Health check")
+			fmt.Println()
+			fmt.Println("  Dashboard:")
+			fmt.Printf("    http://%s — Web UI\n", addr)
 			fmt.Println()
 			fmt.Println("  Claude Code setup:")
 			fmt.Printf("    export ANTHROPIC_BASE_URL=http://%s\n", addr)
@@ -99,6 +165,9 @@ var serveCmd = &cobra.Command{
 		if err := httpSrv.Shutdown(ctx); err != nil {
 			log.Printf("Server shutdown error: %v", err)
 		}
+		if s != nil {
+			s.Close()
+		}
 		log.Println("Server stopped")
 		return nil
 	},
@@ -117,4 +186,73 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		log.Printf("<- %s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
+}
+
+func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, statusCode: 200}
+		next.ServeHTTP(rw, r)
+
+		// Log /v1/ and /api/ requests
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/v1/") {
+			apiKey := r.Header.Get("x-api-key")
+			if apiKey == "" {
+				apiKey = r.Header.Get("Authorization")
+				if strings.HasPrefix(apiKey, "Bearer ") {
+					apiKey = strings.TrimPrefix(apiKey, "Bearer ")
+				}
+			}
+			if apiKey == "" {
+				// Use default account
+				if a, _ := s.GetDefaultAccount(); a != nil {
+					apiKey = a.APIKey
+				}
+			}
+
+			model := ""
+			contentType := r.Header.Get("Content-Type")
+			if strings.Contains(contentType, "json") && r.Method == "POST" && r.Body != nil {
+				var body map[string]interface{}
+				r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
+				json.NewDecoder(r.Body).Decode(&body)
+				if m, ok := body["model"].(string); ok {
+					model = m
+				}
+			}
+
+			isStream := r.URL.Query().Get("stream") != "" || path == "/v1/messages"
+			latency := time.Since(start).Milliseconds()
+
+			if rw.statusCode >= 400 {
+				slog.Error("proxy error response",
+					"status", rw.statusCode,
+					"method", r.Method,
+					"path", path,
+					"model", model,
+					"latency_ms", latency,
+					"api_key", apiKey,
+				)
+			}
+
+			go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency)
+		}
+	})
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
