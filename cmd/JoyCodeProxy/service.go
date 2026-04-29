@@ -1,12 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"text/template"
-
 	"github.com/spf13/cobra"
 )
 
@@ -18,133 +12,31 @@ const (
 
 var serviceCmd = &cobra.Command{
 	Use:     "service",
-	Short:   "管理 macOS 服务（安装/卸载/状态）",
-	Long:    "将 JoyCode Proxy 安装为 macOS launchd 服务，支持开机自启和崩溃自动重启。",
+	Short:   "管理后台服务（安装/卸载/状态）",
+	Long:    "将 JoyCode Proxy 安装为系统后台服务，支持开机自启和崩溃自动重启。自动适配 macOS (launchd) 和 Linux (systemd)。",
 	GroupID: "service",
 }
 
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "安装并启动 launchd 服务",
-	Long:  "将代理安装为 macOS launchd 服务。安装后自动启动，支持开机自启和崩溃自动重启。",
+	Short: "安装并启动后台服务",
+	Long:  "将代理安装为系统后台服务。安装后自动启动，支持开机自启和崩溃自动重启。",
 	Example: `  # 使用默认端口 34891 安装
   joycode-proxy service install
 
   # 指定端口
   joycode-proxy service install -p 8080`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		binPath, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("cannot determine binary path: %w", err)
-		}
-		binPath, err = filepath.Abs(binPath)
-		if err != nil {
-			return fmt.Errorf("cannot resolve binary path: %w", err)
-		}
-
-		home, _ := os.UserHomeDir()
-		logPath := filepath.Join(home, logDir)
-		if err := os.MkdirAll(logPath, 0755); err != nil {
-			return fmt.Errorf("cannot create log directory: %w", err)
-		}
-
-		plistData := struct {
-			Label      string
-			BinaryPath string
-			Port       int
-			HomeDir    string
-			StdoutLog  string
-			StderrLog  string
-		}{
-			Label:      serviceLabel,
-			BinaryPath: binPath,
-			Port:       servePort,
-			HomeDir:    home,
-			StdoutLog:  filepath.Join(logPath, "stdout.log"),
-			StderrLog:  filepath.Join(logPath, "stderr.log"),
-		}
-
-		tmpl := `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{{.Label}}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{{.BinaryPath}}</string>
-        <string>serve</string>
-        <string>--port</string>
-        <string>{{.Port}}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>StandardOutPath</key>
-    <string>{{.StdoutLog}}</string>
-    <key>StandardErrorPath</key>
-    <string>{{.StderrLog}}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HOME</key>
-        <string>{{.HomeDir}}</string>
-    </dict>
-</dict>
-</plist>`
-
-		plistPath := filepath.Join(home, "Library", "LaunchAgents", plistName)
-		f, err := os.Create(plistPath)
-		if err != nil {
-			return fmt.Errorf("cannot create plist: %w", err)
-		}
-		defer f.Close()
-
-		t, err := template.New("plist").Parse(tmpl)
-		if err != nil {
-			return err
-		}
-		if err := t.Execute(f, plistData); err != nil {
-			return err
-		}
-
-		out, err := exec.Command("launchctl", "load", plistPath).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("launchctl load failed: %s: %w", string(out), err)
-		}
-
-		fmt.Printf("Service installed and started.\n")
-		fmt.Printf("  Label:   %s\n", serviceLabel)
-		fmt.Printf("  Plist:   %s\n", plistPath)
-		fmt.Printf("  Port:    %d\n", servePort)
-		fmt.Printf("  Logs:    %s/\n", logPath)
-		return nil
+		return installService(servePort)
 	},
 }
 
 var serviceUninstallCmd = &cobra.Command{
 	Use:     "uninstall",
-	Short:   "停止并移除 launchd 服务",
+	Short:   "停止并移除后台服务",
 	Example: `  joycode-proxy service uninstall`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		home, _ := os.UserHomeDir()
-		plistPath := filepath.Join(home, "Library", "LaunchAgents", plistName)
-
-		exec.Command("launchctl", "unload", plistPath).Run()
-
-		if _, err := os.Stat(plistPath); os.IsNotExist(err) {
-			fmt.Println("Service not installed (plist not found).")
-			return nil
-		}
-
-		if err := os.Remove(plistPath); err != nil {
-			return fmt.Errorf("cannot remove plist: %w", err)
-		}
-
-		fmt.Println("Service stopped and removed.")
-		return nil
+		return uninstallService()
 	},
 }
 
@@ -153,34 +45,7 @@ var serviceStatusCmd = &cobra.Command{
 	Short:   "查看服务运行状态",
 	Example: `  joycode-proxy service status`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		home, _ := os.UserHomeDir()
-		plistPath := filepath.Join(home, "Library", "LaunchAgents", plistName)
-		if _, err := os.Stat(plistPath); os.IsNotExist(err) {
-			fmt.Println("Service not installed.")
-			return nil
-		}
-
-		out, err := exec.Command("launchctl", "list").Output()
-		if err != nil {
-			return fmt.Errorf("launchctl list failed: %w", err)
-		}
-
-		found := false
-		lines := splitLines(string(out))
-		for _, line := range lines {
-			if containsStr(line, serviceLabel) {
-				fmt.Printf("Service status: %s\n", line)
-				found = true
-				break
-			}
-		}
-		if !found {
-			fmt.Println("Service installed but not running (plist exists, not in launchctl).")
-			fmt.Println("Run 'joycode-proxy service install' to start it.")
-		}
-
-		fmt.Printf("\nLogs: %s/\n", filepath.Join(home, logDir))
-		return nil
+		return serviceStatus()
 	},
 }
 

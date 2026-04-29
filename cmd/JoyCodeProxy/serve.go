@@ -37,6 +37,10 @@ var serveCmd = &cobra.Command{
   # 跳过凭据验证（用于测试）
   joycode-proxy serve --skip-validation`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// If running as daemon child, redirect logs to daemon log file
+		if os.Getenv("_JOYCODE_DAEMON_CHILD") == "1" {
+			runAsDaemonChild()
+		}
 		client, err := resolveClient()
 		if err != nil {
 			return err
