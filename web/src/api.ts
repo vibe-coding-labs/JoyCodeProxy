@@ -88,6 +88,10 @@ export const api = {
     request<{ ok: boolean; api_token: string }>(`/api/accounts/${encodeURIComponent(apiKey)}/renew-token`, { method: 'POST' }),
   autoLogin: () =>
     request<{ ok: boolean; api_key: string; user_id: string; real_name: string; is_default: boolean }>('/api/accounts-auto-login', { method: 'POST' }),
+  qrLoginInit: () =>
+    request<{ ok: boolean; session_id: string; qr_image: string }>('/api/qr-login/init', { method: 'POST' }),
+  qrLoginStatus: (sessionId: string) =>
+    request<{ status: string; ok?: boolean; api_key?: string; user_id?: string; real_name?: string; message?: string }>(`/api/qr-login/status?session=${encodeURIComponent(sessionId)}`),
   getRecentErrors: (limit = 50) =>
     request<{ errors: RequestLog[]; total: number }>(`/api/errors?limit=${limit}`),
 };

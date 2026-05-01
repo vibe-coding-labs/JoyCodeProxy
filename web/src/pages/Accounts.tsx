@@ -11,6 +11,7 @@ import {
 import SvgClaudeCode from '../components/ClaudeCodeIcon';
 import SvgCodex from '../components/CodexIcon';
 import CommandTooltip from '../components/CommandTooltip';
+import QRLoginModal from '../components/QRLoginModal';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { Account } from '../api';
@@ -62,6 +63,7 @@ const Accounts: React.FC = () => {
   const [form] = Form.useForm();
   const [validating, setValidating] = useState<string | null>(null);
   const [autoLogging, setAutoLogging] = useState(false);
+  const [qrModalOpen, setQrModalOpen] = useState(false);
 
   const fetchAccounts = async () => {
     setLoading(true);
@@ -263,6 +265,12 @@ const Accounts: React.FC = () => {
           >
             一键登录
           </Button>
+          <Button
+            onClick={() => setQrModalOpen(true)}
+            icon={<SafetyCertificateOutlined />}
+          >
+            扫码登录
+          </Button>
           <Button onClick={() => setModalOpen(true)} icon={<PlusOutlined />}>
             手动添加
           </Button>
@@ -382,6 +390,12 @@ const Accounts: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      <QRLoginModal
+        open={qrModalOpen}
+        onClose={() => setQrModalOpen(false)}
+        onSuccess={fetchAccounts}
+      />
     </div>
   );
 };
