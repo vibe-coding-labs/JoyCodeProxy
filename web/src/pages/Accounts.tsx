@@ -60,6 +60,7 @@ const Accounts: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [form] = Form.useForm();
   const [validating, setValidating] = useState<string | null>(null);
+  const [autoLogging, setAutoLogging] = useState(false);
 
   const fetchAccounts = async () => {
     setLoading(true);
@@ -84,6 +85,19 @@ const Accounts: React.FC = () => {
       fetchAccounts();
     } catch (e: unknown) {
       message.error(e instanceof Error ? e.message : '添加账号失败');
+    }
+  };
+
+  const handleAutoLogin = async () => {
+    setAutoLogging(true);
+    try {
+      const result = await api.autoLogin();
+      message.success(`一键登录成功！账号「${result.api_key}」已添加`);
+      fetchAccounts();
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '一键登录失败');
+    } finally {
+      setAutoLogging(false);
     }
   };
 
@@ -234,8 +248,16 @@ const Accounts: React.FC = () => {
         <Typography.Title level={4} style={{ margin: 0 }}>账号管理</Typography.Title>
         <Space>
           <Button onClick={fetchAccounts} icon={<ReloadOutlined />}>刷新</Button>
-          <Button type="primary" onClick={() => setModalOpen(true)} icon={<PlusOutlined />}>
-            添加账号
+          <Button
+            type="primary"
+            onClick={handleAutoLogin}
+            loading={autoLogging}
+            icon={<SafetyCertificateOutlined />}
+          >
+            一键登录
+          </Button>
+          <Button onClick={() => setModalOpen(true)} icon={<PlusOutlined />}>
+            手动添加
           </Button>
         </Space>
       </div>
@@ -262,7 +284,7 @@ const Accounts: React.FC = () => {
       />
 
       <Modal
-        title="添加 JoyCode 账号"
+        title="手动添加 JoyCode 账号"
         open={modalOpen}
         onCancel={() => { setModalOpen(false); form.resetFields(); }}
         onOk={() => form.submit()}
@@ -273,8 +295,8 @@ const Accounts: React.FC = () => {
         <Alert
           type="info"
           showIcon
-          message="添加账号说明"
-          description="将 JoyCode 客户端的凭证信息填入下方表单。添加后，Claude Code 使用对应的路由密钥即可通过此账号访问 JoyCode 后端。"
+          message="手动添加账号"
+          description="填写 JoyCode 客户端凭证信息。推荐使用「一键登录」自动导入，此处适合手动配置多个账号。"
           style={{ marginBottom: 16 }}
         />
         <Form form={form} layout="vertical" onFinish={handleAdd}>

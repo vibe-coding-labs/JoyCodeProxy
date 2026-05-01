@@ -86,4 +86,8 @@ export const api = {
     request<{ logs: RequestLog[]; total: number }>(`/api/accounts/${encodeURIComponent(apiKey)}/logs?limit=${limit}`),
   renewToken: (apiKey: string) =>
     request<{ ok: boolean; api_token: string }>(`/api/accounts/${encodeURIComponent(apiKey)}/renew-token`, { method: 'POST' }),
+  autoLogin: () =>
+    request<{ ok: boolean; api_key: string; user_id: string; real_name: string; is_default: boolean }>('/api/accounts-auto-login', { method: 'POST' }),
+  getRecentErrors: (limit = 50) =>
+    request<{ errors: RequestLog[]; total: number }>(`/api/errors?limit=${limit}`),
 };
