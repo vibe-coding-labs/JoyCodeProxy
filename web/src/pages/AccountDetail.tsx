@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
   Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
-  message, Space, Table, Badge, Segmented, Tooltip,
+  message, Space, Table, Badge, Segmented, Tooltip, Popconfirm,
 } from 'antd';
 import {
   ArrowLeftOutlined, ApiOutlined, ThunderboltOutlined,
   CheckCircleOutlined, WarningOutlined, ReloadOutlined,
   ClockCircleOutlined, GlobalOutlined, FireOutlined, CopyOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
@@ -270,6 +271,21 @@ const AccountDetail: React.FC = () => {
           <Button size="small" icon={<ReloadOutlined />} onClick={() => { fetchData(); fetchModels(); }}>
             刷新
           </Button>
+          <Popconfirm
+            title={`确定要删除账号「${decodedKey}」吗？`}
+            description="删除后使用该密钥的客户端将无法访问"
+            onConfirm={async () => {
+              try {
+                await api.removeAccount(decodedKey);
+                message.success(`账号「${decodedKey}」已删除`);
+                navigate('/accounts');
+              } catch (e: unknown) {
+                message.error(e instanceof Error ? e.message : '删除账号失败');
+              }
+            }}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </Space>
       </div>
 
