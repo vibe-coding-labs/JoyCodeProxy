@@ -212,7 +212,7 @@ const Accounts: React.FC = () => {
       render: (_: unknown, record: Account) => (
         <Space>
           {!record.is_default && (
-            <Button size="small" onClick={() => handleSetDefault(record.api_key)}>
+            <Button size="small" onClick={(e) => { e.stopPropagation(); handleSetDefault(record.api_key); }}>
               <StarOutlined /> 设为默认
             </Button>
           )}
@@ -221,11 +221,11 @@ const Accounts: React.FC = () => {
             description="重置后旧 Token 将立即失效"
             onConfirm={() => handleRenewToken(record.api_key)}
           >
-            <Button size="small">重置 Token</Button>
+            <Button size="small" onClick={(e) => e.stopPropagation()}>重置 Token</Button>
           </Popconfirm>
           <Button
             size="small"
-            onClick={() => handleValidate(record.api_key)}
+            onClick={(e) => { e.stopPropagation(); handleValidate(record.api_key); }}
             loading={validating === record.api_key}
           >
             <SafetyCertificateOutlined /> 验证
@@ -235,7 +235,7 @@ const Accounts: React.FC = () => {
             description="删除后使用该密钥的客户端将无法访问"
             onConfirm={() => handleRemove(record.api_key)}
           >
-            <Button size="small" danger><DeleteOutlined /> 删除</Button>
+            <Button size="small" danger onClick={(e) => e.stopPropagation()}><DeleteOutlined /> 删除</Button>
           </Popconfirm>
         </Space>
       ),
