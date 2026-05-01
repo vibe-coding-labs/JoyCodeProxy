@@ -152,7 +152,15 @@ const Accounts: React.FC = () => {
       title: '账户名',
       dataIndex: 'api_key',
       key: 'api_key',
-      render: (text: string) => <Typography.Text strong>{text}</Typography.Text>,
+      render: (text: string, record: Account) => (
+        <Typography.Text
+          strong
+          style={{ cursor: 'pointer' }}
+          onClick={() => navigate(`/accounts/${encodeURIComponent(record.api_key)}`)}
+        >
+          {text}
+        </Typography.Text>
+      ),
     },
     {
       title: 'API Token',
@@ -276,11 +284,7 @@ const Accounts: React.FC = () => {
         rowKey="api_key"
         loading={loading}
         pagination={false}
-        onRow={(record) => ({
-          onClick: () => navigate(`/accounts/${encodeURIComponent(record.api_key)}`),
-          style: { cursor: 'pointer' },
-        })}
-        locale={{ emptyText: '暂无账号，请点击「添加账号」按钮配置您的第一个 JoyCode 账号' }}
+        locale={{ emptyText: '暂无账号，请点击「一键登录」或「手动添加」按钮配置您的第一个 JoyCode 账号' }}
       />
 
       <Modal
