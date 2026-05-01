@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons';
 import SvgClaudeCode from '../components/ClaudeCodeIcon';
 import SvgCodex from '../components/CodexIcon';
+import CommandTooltip from '../components/CommandTooltip';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { Account } from '../api';
@@ -152,14 +153,8 @@ const Accounts: React.FC = () => {
       title: '账户名',
       dataIndex: 'api_key',
       key: 'api_key',
-      render: (text: string, record: Account) => (
-        <Typography.Text
-          strong
-          style={{ cursor: 'pointer' }}
-          onClick={() => navigate(`/accounts/${encodeURIComponent(record.api_key)}`)}
-        >
-          {text}
-        </Typography.Text>
+      render: (text: string) => (
+        <Typography.Text strong>{text}</Typography.Text>
       ),
     },
     {
@@ -193,26 +188,30 @@ const Accounts: React.FC = () => {
       title: '快速启动',
       key: 'quickstart',
       width: 90,
-      render: (_: unknown, record: Account) => (
-        <Space size={4}>
-          <Tooltip title={`复制 Claude Code 命令`}>
-            <Button
-              type="text"
-              size="small"
-              icon={<SvgClaudeCode />}
-              onClick={(e) => { e.stopPropagation(); copyToClipboard(claudeCodeCmd(record.api_token, record.default_model || undefined), 'Claude Code'); }}
-            />
-          </Tooltip>
-          <Tooltip title={`复制 Codex 命令`}>
-            <Button
-              type="text"
-              size="small"
-              icon={<SvgCodex />}
-              onClick={(e) => { e.stopPropagation(); copyToClipboard(codexCmd(record.api_token, record.default_model || undefined), 'Codex'); }}
-            />
-          </Tooltip>
-        </Space>
-      ),
+      render: (_: unknown, record: Account) => {
+        const claudeCmd = claudeCodeCmd(record.api_token, record.default_model || undefined);
+        const cxCmd = codexCmd(record.api_token, record.default_model || undefined);
+        return (
+          <Space size={4}>
+            <CommandTooltip command={claudeCmd} label="Claude Code">
+              <Button
+                type="text"
+                size="small"
+                icon={<SvgClaudeCode />}
+                onClick={(e) => { e.stopPropagation(); copyToClipboard(claudeCmd, 'Claude Code'); }}
+              />
+            </CommandTooltip>
+            <CommandTooltip command={cxCmd} label="Codex">
+              <Button
+                type="text"
+                size="small"
+                icon={<SvgCodex />}
+                onClick={(e) => { e.stopPropagation(); copyToClipboard(cxCmd, 'Codex'); }}
+              />
+            </CommandTooltip>
+          </Space>
+        );
+      },
     },
     {
       title: '操作',
@@ -284,6 +283,10 @@ const Accounts: React.FC = () => {
         rowKey="api_key"
         loading={loading}
         pagination={false}
+        onRow={(record) => ({
+          onClick: () => navigate(`/accounts/${encodeURIComponent(record.api_key)}`),
+          style: { cursor: 'pointer' },
+        })}
         locale={{ emptyText: '暂无账号，请点击「一键登录」或「手动添加」按钮配置您的第一个 JoyCode 账号' }}
       />
 
