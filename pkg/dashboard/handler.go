@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
@@ -31,10 +32,45 @@ func NewHandler(s *store.Store, staticFS fs.FS) *Handler {
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/accounts", h.handleAccounts)
 	mux.HandleFunc("/api/accounts/", h.handleAccountAction)
+	mux.HandleFunc("/api/accounts-auto-login", h.handleAutoLogin)
 	mux.HandleFunc("/api/models", h.handleModels)
 	mux.HandleFunc("/api/stats", h.handleStats)
 	mux.HandleFunc("/api/settings", h.handleSettings)
 	mux.HandleFunc("/api/health", h.handleHealth)
+	mux.HandleFunc("/api/errors", h.handleErrors)
+}
+
+// --- Errors Handler ---
+
+func (h *Handler) handleErrors(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := fmt.Sscanf(l, "%d", &limit); err == nil && n == 1 && limit > 0 && limit <= 200 {
+			// ok
+		} else {
+			limit = 50
+		}
+	}
+	logs, err := h.store.GetRecentErrors(limit)
+	if err != nil {
+		slog.Error("get recent errors", "error", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if logs == nil {
+		logs = []store.RequestLog{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"errors": logs, "total": len(logs)})
 }
 
 // ServeStatic serves the SPA frontend for non-API routes.
@@ -164,6 +200,77 @@ func (h *Handler) addAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "api_key": body.APIKey})
+}
+
+func (h *Handler) handleAutoLogin(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	creds, err := auth.LoadFromSystem()
+	if err != nil {
+		slog.Error("auto-login: load from system failed", "error", err)
+		writeError(w, http.StatusBadRequest, "无法从本机获取 JoyCode 凭据: "+err.Error())
+		return
+	}
+
+	client := joycode.NewClient(creds.PtKey, creds.UserID)
+	userInfo, err := client.UserInfo()
+	if err != nil {
+		slog.Error("auto-login: userInfo request failed", "user_id", creds.UserID, "error", err)
+		writeError(w, http.StatusUnauthorized, "凭据验证失败，请先在 JoyCode IDE 中登录: "+err.Error())
+		return
+	}
+
+	code, ok := userInfo["code"].(float64)
+	if !ok || code != 0 {
+		msg := "未知错误"
+		if m, ok := userInfo["msg"].(string); ok && m != "" {
+			msg = m
+		}
+		slog.Error("auto-login: credentials invalid", "user_id", creds.UserID, "code", code, "msg", msg)
+		writeError(w, http.StatusUnauthorized, "凭据已过期或无效: "+msg)
+		return
+	}
+
+	apiKey := creds.UserID
+	realName := ""
+	if data, ok := userInfo["data"].(map[string]interface{}); ok {
+		if name, ok := data["realName"].(string); ok && name != "" {
+			apiKey = name
+			realName = name
+		}
+	}
+
+	isDefault := true
+	accounts, _ := h.store.ListAccounts()
+	for _, a := range accounts {
+		if a.IsDefault {
+			isDefault = false
+			break
+		}
+	}
+
+	if err := h.store.AddAccount(apiKey, creds.PtKey, creds.UserID, isDefault, "GLM-5.1"); err != nil {
+		slog.Error("auto-login: save account failed", "api_key", apiKey, "error", err)
+		writeError(w, http.StatusInternalServerError, "保存账号失败: "+err.Error())
+		return
+	}
+
+	slog.Info("auto-login: account saved", "api_key", apiKey, "user_id", creds.UserID, "real_name", realName)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":         true,
+		"api_key":    apiKey,
+		"user_id":    creds.UserID,
+		"real_name":  realName,
+		"is_default": isDefault,
+	})
 }
 
 func (h *Handler) handleAccountAction(w http.ResponseWriter, r *http.Request) {
@@ -378,6 +485,7 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.store.GetStats()
 	if err != nil {
+		slog.Error("get global stats", "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
