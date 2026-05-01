@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
-  message, Space, Table, Badge, Segmented, Tooltip, Popconfirm,
+  message, Space, Table, Badge, Segmented, Popconfirm,
 } from 'antd';
 import {
   ArrowLeftOutlined, ApiOutlined, ThunderboltOutlined,
@@ -18,6 +18,7 @@ import { api } from '../api';
 import type { Account, AccountStats, ModelInfo, RequestLog } from '../api';
 import SvgClaudeCode from '../components/ClaudeCodeIcon';
 import SvgCodex from '../components/CodexIcon';
+import CommandTooltip from '../components/CommandTooltip';
 
 const BUILTIN_MODELS = [
   { label: 'JoyAI-Code（推荐）', value: 'JoyAI-Code' },
@@ -304,12 +305,15 @@ const AccountDetail: React.FC = () => {
                   <SvgClaudeCode />
                   <Typography.Text strong style={{ fontSize: 13 }}>Claude Code</Typography.Text>
                 </div>
-                <Tooltip title="复制 Claude Code 命令">
+                <CommandTooltip
+                  command={buildClaudeCodeCmd(account.api_token, account.default_model || undefined)}
+                  label="Claude Code"
+                >
                   <Button
                     type="text" size="small" icon={<CopyOutlined />}
                     onClick={() => copyCmd(buildClaudeCodeCmd(account.api_token, account.default_model || undefined), 'Claude Code')}
                   />
-                </Tooltip>
+                </CommandTooltip>
               </div>
               <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#333' }}>
 {buildClaudeCodeCmd(account.api_token, account.default_model || undefined)}
@@ -325,12 +329,15 @@ const AccountDetail: React.FC = () => {
                   <SvgCodex />
                   <Typography.Text strong style={{ fontSize: 13 }}>Codex</Typography.Text>
                 </div>
-                <Tooltip title="复制 Codex 命令">
+                <CommandTooltip
+                  command={buildCodexCmd(account.api_token, account.default_model || undefined)}
+                  label="Codex"
+                >
                   <Button
                     type="text" size="small" icon={<CopyOutlined />}
                     onClick={() => copyCmd(buildCodexCmd(account.api_token, account.default_model || undefined), 'Codex')}
                   />
-                </Tooltip>
+                </CommandTooltip>
               </div>
               <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#333' }}>
 {buildCodexCmd(account.api_token, account.default_model || undefined)}
