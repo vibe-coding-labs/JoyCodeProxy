@@ -33,6 +33,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/accounts", h.handleAccounts)
 	mux.HandleFunc("/api/accounts/", h.handleAccountAction)
 	mux.HandleFunc("/api/accounts-auto-login", h.handleAutoLogin)
+	mux.HandleFunc("/api/qr-login/init", h.handleQRLoginInit)
+	mux.HandleFunc("/api/qr-login/status", h.handleQRLoginStatus)
 	mux.HandleFunc("/api/models", h.handleModels)
 	mux.HandleFunc("/api/stats", h.handleStats)
 	mux.HandleFunc("/api/settings", h.handleSettings)
@@ -270,6 +272,94 @@ func (h *Handler) handleAutoLogin(w http.ResponseWriter, r *http.Request) {
 		"user_id":    creds.UserID,
 		"real_name":  realName,
 		"is_default": isDefault,
+	})
+}
+
+func (h *Handler) handleQRLoginInit(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	sessionID, qrImage, err := auth.QRInit()
+	if err != nil {
+		slog.Error("qr-login init", "error", err)
+		writeError(w, http.StatusInternalServerError, "生成二维码失败: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":         true,
+		"session_id": sessionID,
+		"qr_image":   "data:image/png;base64," + qrImage,
+	})
+}
+
+func (h *Handler) handleQRLoginStatus(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	sessionID := r.URL.Query().Get("session")
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "missing session parameter")
+		return
+	}
+
+	status, result, err := auth.QRPollStatus(sessionID)
+	if err != nil {
+		slog.Error("qr-login poll", "session", sessionID, "error", err)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status": "error", "message": err.Error(),
+		})
+		return
+	}
+
+	if status != "confirmed" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status": status,
+		})
+		return
+	}
+
+	apiKey := result.RealName
+	if apiKey == "" {
+		apiKey = result.UserID
+	}
+
+	isDefault := true
+	accounts, _ := h.store.ListAccounts()
+	for _, a := range accounts {
+		if a.IsDefault {
+			isDefault = false
+			break
+		}
+	}
+
+	if err := h.store.AddAccount(apiKey, result.PtKey, result.UserID, isDefault, "GLM-5.1"); err != nil {
+		slog.Error("qr-login save account", "api_key", apiKey, "error", err)
+		writeError(w, http.StatusInternalServerError, "保存账号失败: "+err.Error())
+		return
+	}
+
+	slog.Info("qr-login: account saved", "api_key", apiKey, "user_id", result.UserID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":    "confirmed",
+		"ok":        true,
+		"api_key":   apiKey,
+		"user_id":   result.UserID,
+		"real_name": result.RealName,
 	})
 }
 
