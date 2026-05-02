@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
@@ -39,6 +40,13 @@ func (s *Server) handleNonStreamChat(w http.ResponseWriter, r *http.Request, cli
 	resp, err := client.Post("/api/saas/openai/v1/chat/completions", jcBody)
 	if err != nil {
 		slog.Error("chat non-stream upstream error", "model", model, "error", err)
+		msg := err.Error()
+		code := 500
+		if isTimeoutError(msg) {
+			code = 504
+			msg = "上游服务响应超时，请稍后重试。"
+		}
+		writeError(w, code, msg)
 		return
 	}
 	if usage, ok := resp["usage"].(map[string]interface{}); ok {
@@ -64,7 +72,11 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, client
 	resp, err := client.PostStream("/api/saas/openai/v1/chat/completions", jcBody)
 	if err != nil {
 		slog.Error("chat stream upstream error", "model", model, "error", err)
-		fmt.Fprintf(w, "data: {\"error\":{\"message\":\"%s\"}}\n\n", err.Error())
+		msg := err.Error()
+		if isTimeoutError(msg) {
+			msg = "上游服务响应超时，请稍后重试。"
+		}
+		fmt.Fprintf(w, "data: {\"error\":{\"message\":\"%s\"}}\n\n", msg)
 		flusher.Flush()
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
@@ -87,4 +99,12 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, client
 			break
 		}
 	}
+}
+
+func isTimeoutError(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "context deadline exceeded") ||
+		strings.Contains(lower, "client.timeout exceeded") ||
+		strings.Contains(lower, "deadline exceeded") ||
+		strings.Contains(lower, "i/o timeout")
 }

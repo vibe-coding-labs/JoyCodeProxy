@@ -141,6 +141,11 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 			writeAnthropicRequestError(w, "上下文长度超出模型限制。请压缩对话历史或开启新对话。原始错误: "+lastErr.Error())
 			return
 		}
+		if isTimeoutError(lastErr) {
+			reqLog(r).Error("upstream timeout after retries", "error", lastErr)
+			writeAnthropicError(w, 504, "上游服务响应超时，请稍后重试。如果问题持续，请尝试减少上下文长度或开启新对话。")
+			return
+		}
 		writeAnthropicError(w, 500, lastErr.Error())
 		return
 	}
@@ -216,6 +221,11 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 		if isContextLimitError(errMsg) {
 			reqLog(r).Warn("context limit exceeded (stream), cannot proceed even after progressive truncation")
 			writeAnthropicRequestError(w, "上下文长度超出模型限制，已尝试自动截断但仍无法满足。请压缩对话历史或开启新对话。原始错误: "+errMsg)
+			return
+		}
+		if isTimeoutError(err) {
+			reqLog(r).Error("upstream timeout (stream) after retries", "error", err)
+			writeAnthropicError(w, 504, "上游服务响应超时，请稍后重试。如果问题持续，请尝试减少上下文长度或开启新对话。")
 			return
 		}
 		reqLog(r).Error("stream failed after retries", "error", errMsg)
@@ -502,6 +512,18 @@ func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]inte
 		return resp, nil
 	}
 	return nil, fmt.Errorf("stream failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// isTimeoutError checks if the error is caused by an upstream timeout.
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "Client.Timeout exceeded") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "i/o timeout")
 }
 
 // isContextLimitError checks if the upstream error indicates context length exceeded.
