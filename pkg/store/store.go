@@ -306,6 +306,26 @@ func (s *Store) AddAccount(apiKey, ptKey, userID string, isDefault bool, default
 		return fmt.Errorf("encrypt pt_key: %w", err)
 	}
 
+	// Check if account already exists (by api_key or user_id)
+	var existingToken string
+	err = s.db.QueryRow(
+		"SELECT api_token FROM accounts WHERE api_key = ? OR user_id = ?", apiKey, userID,
+	).Scan(&existingToken)
+	if err == nil {
+		// Account exists: update pt_key only, preserve api_token
+		_, err = s.db.Exec(
+			"UPDATE accounts SET pt_key = ?, user_id = ?, updated_at = datetime('now', 'localtime') WHERE api_key = ? OR user_id = ?",
+			encPtKey, userID, apiKey, userID,
+		)
+		if err != nil {
+			slog.Error("store: update account failed", "api_key", apiKey, "error", err)
+			return err
+		}
+		slog.Info("store: updated existing account credentials", "api_key", apiKey, "user_id", userID)
+		return nil
+	}
+
+	// New account
 	if isDefault {
 		s.db.Exec("UPDATE accounts SET is_default = 0 WHERE is_default = 1")
 	}
@@ -317,7 +337,7 @@ func (s *Store) AddAccount(apiKey, ptKey, userID string, isDefault bool, default
 
 	token := generateToken()
 	_, err = s.db.Exec(
-		"INSERT OR REPLACE INTO accounts (api_key, api_token, pt_key, user_id, is_default, default_model) VALUES (?, ?, ?, ?, ?, ?)",
+		"INSERT INTO accounts (api_key, api_token, pt_key, user_id, is_default, default_model) VALUES (?, ?, ?, ?, ?, ?)",
 		apiKey, token, encPtKey, userID, def, defaultModel,
 	)
 	if err != nil {
