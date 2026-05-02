@@ -6,6 +6,7 @@ import zhCN from 'antd/locale/zh_CN';
 import MainLayout from './layouts/MainLayout';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
+import ForgotPassword from './pages/ForgotPassword';
 import { authApi, isAuthenticated } from './api';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -51,6 +52,7 @@ const App: React.FC = () => (
       <Routes>
         <Route path="/setup" element={<Setup />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route element={<AuthGuard><MainLayout /></AuthGuard>}>
           <Route path="/dashboard" element={<Suspense fallback={pageLoading}><Dashboard /></Suspense>} />
           <Route path="/accounts" element={<Suspense fallback={pageLoading}><Accounts /></Suspense>} />

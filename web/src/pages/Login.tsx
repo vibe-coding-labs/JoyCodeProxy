@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Form, Input, Button, Card, message, Typography, Modal, Alert } from 'antd';
+import { Form, Input, Button, Card, message, Typography } from 'antd';
 import { LockOutlined, UserOutlined, QuestionCircleOutlined } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { authApi, setToken } from '../api';
 
 const { Title, Text } = Typography;
@@ -22,51 +22,6 @@ const LoginPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const showForgotPassword = async () => {
-    let exePath = './joycode_proxy_bin';
-    try {
-      const status = await authApi.status();
-      if (status.exe_path) {
-        exePath = status.exe_path;
-      }
-    } catch {}
-
-    Modal.info({
-      title: '重置密码',
-      width: 520,
-      okText: '知道了',
-      content: (
-        <div style={{ marginTop: 12 }}>
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 16 }}
-            message="忘记密码需要通过命令行重置"
-          />
-          <Text>在服务器上执行以下命令：</Text>
-          <pre style={{
-            background: '#f5f5f5',
-            padding: '12px 16px',
-            borderRadius: 6,
-            marginTop: 8,
-            marginBottom: 12,
-            fontSize: 13,
-            overflow: 'auto',
-          }}>
-{`# 交互式输入新密码
-${exePath} reset-password
-
-# 或直接指定新密码
-${exePath} reset-password -p 你的新密码`}
-          </pre>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            密码以 bcrypt 哈希形式保存在 SQLite 数据库中，重置后所有已登录的会话需要重新登录。
-          </Text>
-        </div>
-      ),
-    });
   };
 
   return (
@@ -108,14 +63,13 @@ ${exePath} reset-password -p 你的新密码`}
           </Form.Item>
         </Form>
         <div style={{ textAlign: 'center', marginTop: 16 }}>
-          <Button
-            type="link"
-            icon={<QuestionCircleOutlined />}
-            onClick={showForgotPassword}
-            style={{ color: '#999', fontSize: 13, padding: 0 }}
+          <Link
+            to="/forgot-password"
+            style={{ color: '#999', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4 }}
           >
+            <QuestionCircleOutlined />
             忘记密码？
-          </Button>
+          </Link>
         </div>
       </Card>
     </div>
