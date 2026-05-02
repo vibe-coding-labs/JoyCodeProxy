@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,6 +34,13 @@ func NewHandler(s *store.Store, staticFS fs.FS) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+	// Auth endpoints (no JWT required)
+	mux.HandleFunc("/api/auth/status", h.handleAuthStatus)
+	mux.HandleFunc("/api/auth/setup", h.handleAuthSetup)
+	mux.HandleFunc("/api/auth/login", h.handleAuthLogin)
+	mux.HandleFunc("/api/auth/change-password", h.handleChangePassword)
+
+	// Dashboard endpoints (JWT required — enforced by middleware)
 	mux.HandleFunc("/api/accounts", h.handleAccounts)
 	mux.HandleFunc("/api/accounts/", h.handleAccountAction)
 	mux.HandleFunc("/api/accounts-auto-login", h.handleAutoLogin)
@@ -190,6 +199,196 @@ func (r readFileSeeker) Seek(offset int64, whence int) (int64, error) {
 }
 
 // --- Helpers ---
+
+// --- Auth Handlers ---
+
+const jwtSecretKey = "auth_jwt_secret"
+const passwordHashKey = "auth_password_hash"
+const defaultJWTExpiry = 24 * time.Hour
+
+func (h *Handler) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	hash := h.store.GetSetting(passwordHashKey)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"initialized": hash != "",
+	})
+}
+
+func (h *Handler) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.store.GetSetting(passwordHashKey) != "" {
+		writeError(w, http.StatusConflict, "root password already initialized")
+		return
+	}
+
+	var body struct {
+		Password string `json:"password"`
+	}
+	if !readJSONBody(w, r, &body) {
+		return
+	}
+	if len(body.Password) < 6 {
+		writeError(w, http.StatusBadRequest, "密码长度不能少于 6 位")
+		return
+	}
+
+	hash, err := auth.HashPassword(body.Password)
+	if err != nil {
+		slog.Error("auth setup: hash password failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "密码加密失败")
+		return
+	}
+
+	if err := h.store.SetSetting(passwordHashKey, hash); err != nil {
+		slog.Error("auth setup: save password failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "保存密码失败")
+		return
+	}
+
+	if h.store.GetSetting(jwtSecretKey) == "" {
+		secret := generateRandomHex(32)
+		h.store.SetSetting(jwtSecretKey, secret)
+	}
+
+	token, err := h.issueJWT()
+	if err != nil {
+		slog.Error("auth setup: issue JWT failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "生成 token 失败")
+		return
+	}
+
+	slog.Info("auth: root password initialized")
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    true,
+		"token": token,
+	})
+}
+
+func (h *Handler) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	hash := h.store.GetSetting(passwordHashKey)
+	if hash == "" {
+		writeError(w, http.StatusConflict, "root password not initialized")
+		return
+	}
+
+	var body struct {
+		Password string `json:"password"`
+	}
+	if !readJSONBody(w, r, &body) {
+		return
+	}
+
+	if !auth.CheckPassword(body.Password, hash) {
+		writeError(w, http.StatusUnauthorized, "密码错误")
+		return
+	}
+
+	token, err := h.issueJWT()
+	if err != nil {
+		slog.Error("auth login: issue JWT failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "生成 token 失败")
+		return
+	}
+
+	slog.Info("auth: root login success")
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    true,
+		"token": token,
+	})
+}
+
+func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	hash := h.store.GetSetting(passwordHashKey)
+	if hash == "" {
+		writeError(w, http.StatusConflict, "root password not initialized")
+		return
+	}
+
+	var body struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if !readJSONBody(w, r, &body) {
+		return
+	}
+
+	if !auth.CheckPassword(body.OldPassword, hash) {
+		writeError(w, http.StatusUnauthorized, "原密码错误")
+		return
+	}
+
+	if len(body.NewPassword) < 6 {
+		writeError(w, http.StatusBadRequest, "新密码长度不能少于 6 位")
+		return
+	}
+
+	newHash, err := auth.HashPassword(body.NewPassword)
+	if err != nil {
+		slog.Error("change password: hash failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "密码加密失败")
+		return
+	}
+
+	if err := h.store.SetSetting(passwordHashKey, newHash); err != nil {
+		slog.Error("change password: save failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "保存密码失败")
+		return
+	}
+
+	slog.Info("auth: root password changed")
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
+func (h *Handler) issueJWT() (string, error) {
+	secret := h.store.GetSetting(jwtSecretKey)
+	if secret == "" {
+		return "", fmt.Errorf("JWT secret not configured")
+	}
+	return auth.GenerateToken("root", secret, defaultJWTExpiry)
+}
+
+func generateRandomHex(n int) string {
+	b := make([]byte, n)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 func setCors(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
