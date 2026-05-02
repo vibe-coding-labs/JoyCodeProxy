@@ -5,9 +5,9 @@ import {
 } from 'antd';
 import {
   SaveOutlined, ReloadOutlined, QuestionCircleOutlined,
-  SettingOutlined, CheckCircleOutlined, InfoCircleOutlined,
+  SettingOutlined, CheckCircleOutlined, InfoCircleOutlined, LockOutlined,
 } from '@ant-design/icons';
-import { api } from '../api';
+import { api, authApi } from '../api';
 import type { Settings } from '../api';
 
 const { Text } = Typography;
@@ -113,7 +113,9 @@ const FIELD_GROUPS = [
 const SettingsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [changePwLoading, setChangePwLoading] = useState(false);
   const [form] = Form.useForm();
+  const [pwForm] = Form.useForm();
 
   const fetchSettings = async () => {
     setLoading(true);
@@ -138,6 +140,19 @@ const SettingsPage: React.FC = () => {
       message.error(e instanceof Error ? e.message : '保存设置失败');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleChangePassword = async (values: { old_password: string; new_password: string }) => {
+    setChangePwLoading(true);
+    try {
+      await authApi.changePassword(values.old_password, values.new_password);
+      message.success('密码修改成功');
+      pwForm.resetFields();
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '密码修改失败');
+    } finally {
+      setChangePwLoading(false);
     }
   };
 
@@ -242,6 +257,55 @@ const SettingsPage: React.FC = () => {
             </Row>
           </Card>
         ))}
+
+        <Card
+          title={<Text strong style={{ fontSize: 15 }}>安全设置</Text>}
+          style={{ marginBottom: 16, borderRadius: 8, border: '1px solid #f0f0f0' }}
+          styles={{ body: { padding: '20px 24px' } }}
+          extra={<SettingOutlined style={{ color: '#00b578' }} />}
+        >
+          <Form form={pwForm} layout="vertical" onFinish={handleChangePassword}>
+            <Row gutter={[24, 0]}>
+              <Col xs={24} md={8}>
+                <Form.Item name="old_password" label="当前密码" rules={[{ required: true, message: '请输入当前密码' }]}>
+                  <Input.Password placeholder="输入当前密码" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item name="new_password" label="新密码" rules={[
+                  { required: true, message: '请输入新密码' },
+                  { min: 6, message: '密码长度不能少于 6 位' },
+                ]}>
+                  <Input.Password placeholder="输入新密码（至少 6 位）" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item label="确认新密码" dependencies={['new_password']} rules={[
+                  { required: true, message: '请确认新密码' },
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      if (!value || getFieldValue('new_password') === value) {
+                        return Promise.resolve();
+                      }
+                      return Promise.reject(new Error('两次输入的密码不一致'));
+                    },
+                  }),
+                ]} name="confirm_password">
+                  <Input.Password placeholder="再次输入新密码" />
+                </Form.Item>
+              </Col>
+            </Row>
+            <Button
+              type="primary"
+              htmlType="submit"
+              loading={changePwLoading}
+              icon={<LockOutlined />}
+              style={{ borderRadius: 6 }}
+            >
+              修改密码
+            </Button>
+          </Form>
+        </Card>
 
         <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
           <Button

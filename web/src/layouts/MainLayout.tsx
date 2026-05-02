@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Layout, Menu, Typography, Tag, theme, Tooltip } from 'antd';
+import { Layout, Menu, Typography, Tag, theme, Tooltip, Button, message } from 'antd';
 import {
   DashboardOutlined,
   TeamOutlined,
@@ -7,10 +7,11 @@ import {
   CheckCircleOutlined,
   GithubOutlined,
   StarFilled,
+  LogoutOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import useDocumentTitle from '../hooks/useDocumentTitle';
-import { api } from '../api';
+import { api, clearToken } from '../api';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -84,7 +85,20 @@ const MainLayout: React.FC = () => {
             </Tag>
             <Text type="secondary">{accountCount} 个账号在线</Text>
           </div>
-          <Tooltip title="去 GitHub Star 支持我们">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <Tooltip title="退出登录">
+              <Button
+                type="text"
+                icon={<LogoutOutlined />}
+                onClick={() => {
+                  clearToken();
+                  message.success('已退出登录');
+                  window.location.href = '/login';
+                }}
+                style={{ color: token.colorTextSecondary }}
+              />
+            </Tooltip>
+            <Tooltip title="去 GitHub Star 支持我们">
             <a
               href="https://github.com/vibe-coding-labs/JoyCodeProxy"
               target="_blank"
@@ -101,6 +115,7 @@ const MainLayout: React.FC = () => {
               )}
             </a>
           </Tooltip>
+          </div>
         </Header>
         <Content style={{ margin: 24 }}>
           <Outlet />
