@@ -127,7 +127,7 @@ async function authRequest<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const authApi = {
-  status: () => authRequest<{ initialized: boolean }>('/api/auth/status'),
+  status: () => authRequest<{ initialized: boolean; exe_path?: string }>('/api/auth/status'),
   setup: (password: string) =>
     authRequest<{ ok: boolean; token: string }>('/api/auth/setup', {
       method: 'POST',

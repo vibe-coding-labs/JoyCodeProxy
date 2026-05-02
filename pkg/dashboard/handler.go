@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -217,8 +218,10 @@ func (h *Handler) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hash := h.store.GetSetting(passwordHashKey)
+	exePath, _ := os.Executable()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"initialized": hash != "",
+		"exe_path":    exePath,
 	})
 }
 

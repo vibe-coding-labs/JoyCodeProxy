@@ -24,7 +24,15 @@ const LoginPage: React.FC = () => {
     }
   };
 
-  const showForgotPassword = () => {
+  const showForgotPassword = async () => {
+    let exePath = './joycode_proxy_bin';
+    try {
+      const status = await authApi.status();
+      if (status.exe_path) {
+        exePath = status.exe_path;
+      }
+    } catch {}
+
     Modal.info({
       title: '重置密码',
       width: 520,
@@ -48,10 +56,10 @@ const LoginPage: React.FC = () => {
             overflow: 'auto',
           }}>
 {`# 交互式输入新密码
-./joycode_proxy_bin reset-password
+${exePath} reset-password
 
 # 或直接指定新密码
-./joycode_proxy_bin reset-password -p 你的新密码`}
+${exePath} reset-password -p 你的新密码`}
           </pre>
           <Text type="secondary" style={{ fontSize: 12 }}>
             密码以 bcrypt 哈希形式保存在 SQLite 数据库中，重置后所有已登录的会话需要重新登录。
