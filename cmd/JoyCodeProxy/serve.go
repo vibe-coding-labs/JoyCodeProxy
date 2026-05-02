@@ -19,6 +19,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/anthropic"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/dashboard"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/openai"
@@ -170,7 +171,8 @@ var serveCmd = &cobra.Command{
 
 		var handler http.Handler = mux
 		if s != nil {
-			handler = requestLogMiddleware(mux, s)
+			handler = auth.JWTMiddleware(s, handler)
+			handler = requestLogMiddleware(handler, s)
 		}
 		if verbose {
 			handler = loggingMiddleware(handler)
