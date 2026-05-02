@@ -252,6 +252,10 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 		r = store.InitModel(r)
 		r = store.InitAccountModel(r)
 
+		// Assign request ID for log correlation
+		reqID := atomic.AddUint64(&requestCounter, 1)
+		r = anthropic.WithRequestID(r, reqID)
+
 		// Resolve account default model for handlers
 		if s != nil {
 			ak := r.Header.Get("x-api-key")

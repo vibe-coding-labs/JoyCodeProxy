@@ -58,7 +58,7 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	var req MessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		slog.Error("decode anthropic request", "error", err)
+		reqLog(r).Error("decode anthropic request", "error", err)
 		writeAnthropicError(w, 400, fmt.Sprintf("请求体解析失败: %s。请检查请求是否完整，或尝试开启新对话减少上下文长度。", err.Error()))
 		return
 	}
@@ -80,7 +80,7 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		resolved := resolveModel(req.Model, accountDefault, systemDefault)
 		store.SetModel(r, resolved)
-		slog.Info("anthropic request", "model", req.Model, "resolved", resolved, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
+		reqLog(r).Info("anthropic request", "model", req.Model, "resolved", resolved, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
 
 	client := h.getClient(r)
 
@@ -97,7 +97,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 		systemDefault = h.store.GetSetting("default_model")
 	}
 	// Preemptive truncation: estimate tokens and truncate before sending
-	if rounds := PreemptiveTruncate(req, req.MaxTokens); rounds < 0 {
+	if rounds := PreemptiveTruncate(req); rounds < 0 {
 		writeAnthropicRequestError(w, "上下文过长，自动截断后仍超出限制，请使用 /compact 或开启新对话。")
 		return
 	} else if rounds > 0 {
@@ -105,6 +105,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 	}
 
 	jcBody := TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+	logRequestDetails(r, "translated request (non-stream)", jcBody)
 	maxRetries := 3
 	if h.store != nil {
 		maxRetries = h.store.GetIntSetting("max_retries", 3)
@@ -119,14 +120,14 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *M
 				// Progressive truncation on context limit
 				if truncateMessages(req) {
 					jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
-					slog.Warn("retrying with truncated messages (non-stream)", "attempt", attempt)
+					reqLog(r).Warn("retrying with truncated messages (non-stream)", "attempt", attempt)
 					continue
 				}
-				slog.Warn("context limit exceeded, cannot truncate further")
+				reqLog(r).Warn("context limit exceeded, cannot truncate further")
 				writeAnthropicRequestError(w, "上下文长度超出模型限制，且无法进一步截断。请压缩对话历史或开启新对话。")
 				return
 			}
-			slog.Error("non-stream retry error", "attempt", attempt, "max", maxRetries, "error", lastErr)
+			reqLog(r).Error("non-stream retry error", "attempt", attempt, "max", maxRetries, "error", lastErr)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -186,38 +187,38 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 
 	jcBody := TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 	jcBody["stream"] = true
-	slog.Debug("stream starting", "model", jcBody["model"], "max_tokens", jcBody["max_tokens"])
+	logRequestDetails(r, "translated request (stream)", jcBody)
 
 	// Preemptive truncation: estimate tokens and truncate before sending
-	if rounds := PreemptiveTruncate(req, req.MaxTokens); rounds < 0 {
+	if rounds := PreemptiveTruncate(req); rounds < 0 {
 		writeAnthropicRequestError(w, "上下文过长，自动截断后仍超出限制，请使用 /compact 或开启新对话。")
 		return
 	} else if rounds > 0 {
-		slog.Warn("preemptive truncation applied (stream)", "rounds", rounds)
+		reqLog(r).Warn("preemptive truncation applied (stream)", "rounds", rounds)
 	}
 
 	jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 	jcBody["stream"] = true
 
 	// Connect with retry, progressive auto-truncate on context limit
-	resp, err := h.connectStreamWithRetry(jcBody, client)
+	resp, err := h.connectStreamWithRetry(r, jcBody, client)
 	for truncRound := 0; err != nil && isContextLimitError(err.Error()) && truncRound < maxTruncationRounds; truncRound++ {
-		slog.Warn("stream context limit, truncating", "round", truncRound+1)
+		reqLog(r).Warn("stream context limit, truncating", "round", truncRound+1)
 		if !truncateMessages(req) {
 			break
 		}
 		jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 		jcBody["stream"] = true
-		resp, err = h.connectStreamWithRetry(jcBody, client)
+		resp, err = h.connectStreamWithRetry(r, jcBody, client)
 	}
 	if err != nil {
 		errMsg := err.Error()
 		if isContextLimitError(errMsg) {
-			slog.Warn("context limit exceeded (stream), cannot proceed even after progressive truncation")
+			reqLog(r).Warn("context limit exceeded (stream), cannot proceed even after progressive truncation")
 			writeAnthropicRequestError(w, "上下文长度超出模型限制，已尝试自动截断但仍无法满足。请压缩对话历史或开启新对话。原始错误: "+errMsg)
 			return
 		}
-		slog.Error("stream failed after retries", "error", errMsg)
+		reqLog(r).Error("stream failed after retries", "error", errMsg)
 		writeAnthropicError(w, 500, errMsg)
 		return
 	}
@@ -344,7 +345,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 
 		if choice.FinishReason != nil {
 			fr := *choice.FinishReason
-			slog.Info("stream completed", "chunks", chunkCount, "reason", fr, "tools", len(toolCalls))
+			reqLog(r).Info("stream completed", "chunks", chunkCount, "reason", fr, "tools", len(toolCalls))
 
 			// Ensure at least one content block exists — Anthropic SDK requires it
 			if !textBlockStarted && len(toolBlockStarted) == 0 {
@@ -403,7 +404,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 	}
 
 	if err := scanner.Err(); err != nil {
-		slog.Error("stream scanner error", "error", err)
+		reqLog(r).Error("stream scanner error", "error", err)
 
 		// Ensure at least one content block exists
 		if !textBlockStarted && len(toolBlockStarted) == 0 {
@@ -445,7 +446,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *Mess
 
 // connectStreamWithRetry attempts to connect to upstream with retries.
 // Peeks at the first SSE line to detect errors before returning the response.
-func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}, client *joycode.Client) (*http.Response, error) {
+func (h *Handler) connectStreamWithRetry(r *http.Request, jcBody map[string]interface{}, client *joycode.Client) (*http.Response, error) {
 	maxRetries := 3
 	if h.store != nil {
 		maxRetries = h.store.GetIntSetting("max_retries", 3)
@@ -456,7 +457,7 @@ func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}, client *
 		resp, err := client.PostStream(chatEndpoint, jcBody)
 		if err != nil {
 			lastErr = err
-			slog.Error("stream connect error", "attempt", attempt, "max", maxRetries, "error", err)
+			reqLog(r).Error("stream connect error", "attempt", attempt, "max", maxRetries, "error", err)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -468,7 +469,7 @@ func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}, client *
 		if err != nil {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("read first line: %w", err)
-			slog.Error("stream read first line", "attempt", attempt, "max", maxRetries, "error", lastErr)
+			reqLog(r).Error("stream read first line", "attempt", attempt, "max", maxRetries, "error", lastErr)
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 			}
@@ -480,7 +481,7 @@ func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}, client *
 		if isUpstreamError(dataContent) {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream error: %s", truncate(dataContent, 500))
-			slog.Error("stream upstream error", "attempt", attempt, "max", maxRetries, "body", truncate(dataContent, 500))
+			logUpstreamError(r, attempt, maxRetries, dataContent)
 			if isContextLimitError(dataContent) {
 				return nil, lastErr
 			}
@@ -497,7 +498,7 @@ func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}, client *
 			source: br,
 			body:   originalBody,
 		}
-		slog.Debug("stream connected", "attempt", attempt)
+		reqLog(r).Info("stream connected", "attempt", attempt)
 		return resp, nil
 	}
 	return nil, fmt.Errorf("stream failed after %d attempts: %w", maxRetries, lastErr)
