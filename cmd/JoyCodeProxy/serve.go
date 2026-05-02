@@ -198,6 +198,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		r = store.InitTokenUsage(r)
 
 		// Peek at body to extract model before handler consumes it
 		var model string
@@ -256,7 +257,9 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 				)
 			}
 
-			go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency, errMsg)
+			var inTk, outTk int
+			inTk, outTk = store.GetTokenUsage(r)
+			go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency, errMsg, inTk, outTk)
 		}
 	})
 }

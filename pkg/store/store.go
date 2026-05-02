@@ -44,6 +44,8 @@ type AccountInfo struct {
 
 type Stats struct {
 	TotalRequests int            `json:"total_requests"`
+	TotalInputTk  int            `json:"total_input_tokens"`
+	TotalOutputTk int            `json:"total_output_tokens"`
 	AccountsCount int            `json:"accounts_count"`
 	AvgLatencyMs  float64        `json:"avg_latency_ms"`
 	ErrorCount    int            `json:"error_count"`
@@ -66,6 +68,8 @@ type AccountCount struct {
 type AccountStats struct {
 	APIKey        string          `json:"api_key"`
 	TotalRequests int             `json:"total_requests"`
+	TotalInputTk  int             `json:"total_input_tokens"`
+	TotalOutputTk int             `json:"total_output_tokens"`
 	ByModel       []ModelCount    `json:"by_model"`
 	ByEndpoint    []EndpointCount `json:"by_endpoint"`
 	AvgLatencyMs  float64         `json:"avg_latency_ms"`
@@ -87,6 +91,8 @@ type RequestLog struct {
 	StatusCode   int    `json:"status_code"`
 	LatencyMs    int64  `json:"latency_ms"`
 	ErrorMessage string `json:"error_message"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
 	CreatedAt    string `json:"created_at"`
 }
 
@@ -197,6 +203,10 @@ func (s *Store) migrate() error {
 
 	// Migration: add error_message column to request_logs
 	s.db.Exec("ALTER TABLE request_logs ADD COLUMN error_message TEXT DEFAULT ''")
+
+	// Migration: add token columns to request_logs
+	s.db.Exec("ALTER TABLE request_logs ADD COLUMN input_tokens INTEGER DEFAULT 0")
+	s.db.Exec("ALTER TABLE request_logs ADD COLUMN output_tokens INTEGER DEFAULT 0")
 
 	// Migration: add api_token column to existing DBs
 	s.db.Exec("ALTER TABLE accounts ADD COLUMN api_token TEXT NOT NULL DEFAULT ''")
@@ -551,14 +561,14 @@ func (s *Store) SetSettings(settings map[string]string) error {
 
 // --- Request Logging ---
 
-func (s *Store) LogRequest(apiKey, model, endpoint string, stream bool, statusCode int, latencyMs int64, errMsg string) error {
+func (s *Store) LogRequest(apiKey, model, endpoint string, stream bool, statusCode int, latencyMs int64, errMsg string, inputTokens, outputTokens int) error {
 	sInt := 0
 	if stream {
 		sInt = 1
 	}
 	_, err := s.db.Exec(
-		"INSERT INTO request_logs (api_key, model, endpoint, stream, status_code, latency_ms, error_message) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		apiKey, model, endpoint, sInt, statusCode, latencyMs, errMsg,
+		"INSERT INTO request_logs (api_key, model, endpoint, stream, status_code, latency_ms, error_message, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		apiKey, model, endpoint, sInt, statusCode, latencyMs, errMsg, inputTokens, outputTokens,
 	)
 	if err != nil {
 		slog.Error("store: log request failed", "api_key", apiKey, "endpoint", endpoint, "error", err)
@@ -581,6 +591,8 @@ func (s *Store) GetStats() (*Stats, error) {
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND status_code >= 400").Scan(&stats.ErrorCount)
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND stream = 1").Scan(&stats.StreamCount)
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf+" AND status_code < 400").Scan(&stats.SuccessCount)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE "+tf).Scan(&stats.TotalInputTk)
+	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE "+tf).Scan(&stats.TotalOutputTk)
 
 	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE "+tf+" AND model != '' GROUP BY model ORDER BY cnt DESC")
 	if err != nil {
@@ -634,6 +646,8 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&as.AvgLatencyMs)
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND stream = 1", apiKey).Scan(&as.StreamCount)
 	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400", apiKey).Scan(&as.ErrorCount)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&as.TotalInputTk)
+	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&as.TotalOutputTk)
 
 	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE api_key = ? GROUP BY model ORDER BY cnt DESC", apiKey)
 	if err != nil {
@@ -669,7 +683,7 @@ func (s *Store) GetAccountLogs(apiKey string, limit int) ([]RequestLog, error) {
 		limit = 100
 	}
 	rows, err := s.db.Query(
-		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), created_at FROM request_logs WHERE api_key = ? ORDER BY id DESC LIMIT ?",
+		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs WHERE api_key = ? ORDER BY id DESC LIMIT ?",
 		apiKey, limit,
 	)
 	if err != nil {
@@ -681,7 +695,7 @@ func (s *Store) GetAccountLogs(apiKey string, limit int) ([]RequestLog, error) {
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		l.Stream = streamInt == 1
@@ -695,7 +709,7 @@ func (s *Store) GetRecentLogs(limit int) ([]RequestLog, error) {
 		limit = 100
 	}
 	rows, err := s.db.Query(
-		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), created_at FROM request_logs ORDER BY id DESC LIMIT ?",
+		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs ORDER BY id DESC LIMIT ?",
 		limit,
 	)
 	if err != nil {
@@ -707,7 +721,7 @@ func (s *Store) GetRecentLogs(limit int) ([]RequestLog, error) {
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		l.Stream = streamInt == 1
@@ -723,7 +737,7 @@ func (s *Store) GetRecentErrors(limit int) ([]RequestLog, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(
-		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), created_at FROM request_logs WHERE status_code >= 400 ORDER BY id DESC LIMIT ?",
+		"SELECT id, api_key, model, endpoint, stream, status_code, latency_ms, COALESCE(error_message, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0), created_at FROM request_logs WHERE status_code >= 400 ORDER BY id DESC LIMIT ?",
 		limit,
 	)
 	if err != nil {
@@ -736,7 +750,7 @@ func (s *Store) GetRecentErrors(limit int) ([]RequestLog, error) {
 	for rows.Next() {
 		var l RequestLog
 		var streamInt int
-		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.APIKey, &l.Model, &l.Endpoint, &streamInt, &l.StatusCode, &l.LatencyMs, &l.ErrorMessage, &l.InputTokens, &l.OutputTokens, &l.CreatedAt); err != nil {
 			slog.Error("store: get recent errors scan failed", "error", err)
 			return nil, err
 		}

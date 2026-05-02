@@ -350,7 +350,7 @@ const AccountDetail: React.FC = () => {
       {/* Stats row */}
       {stats && (
         <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
-          <Col xs={12} sm={6}>
+          <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>总请求</span>}
@@ -360,7 +360,25 @@ const AccountDetail: React.FC = () => {
               />
             </Card>
           </Col>
-          <Col xs={12} sm={6}>
+          <Col xs={8} sm={4}>
+            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+              <Statistic
+                title={<span style={{ fontSize: 12 }}>输入 Token</span>}
+                value={(stats.total_input_tokens || 0).toLocaleString()}
+                valueStyle={{ fontSize: 20 }}
+              />
+            </Card>
+          </Col>
+          <Col xs={8} sm={4}>
+            <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+              <Statistic
+                title={<span style={{ fontSize: 12 }}>输出 Token</span>}
+                value={(stats.total_output_tokens || 0).toLocaleString()}
+                valueStyle={{ fontSize: 20 }}
+              />
+            </Card>
+          </Col>
+          <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>平均延迟</span>}
@@ -371,7 +389,7 @@ const AccountDetail: React.FC = () => {
               />
             </Card>
           </Col>
-          <Col xs={12} sm={6}>
+          <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>成功率</span>}
@@ -382,7 +400,7 @@ const AccountDetail: React.FC = () => {
               />
             </Card>
           </Col>
-          <Col xs={12} sm={6}>
+          <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>错误</span>}

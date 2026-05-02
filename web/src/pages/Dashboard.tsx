@@ -65,6 +65,10 @@ const Dashboard: React.FC = () => {
                 <div style={{ color: '#fff', fontSize: 24, fontWeight: 700 }}>{stats.total_requests}</div>
               </Col>
               <Col style={{ textAlign: 'center' }}>
+                <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>24h Token 用量</div>
+                <div style={{ color: '#fff', fontSize: 24, fontWeight: 700 }}>{((stats.total_input_tokens || 0) + (stats.total_output_tokens || 0)).toLocaleString()}</div>
+              </Col>
+              <Col style={{ textAlign: 'center' }}>
                 <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>在线账号</div>
                 <div style={{ color: '#fff', fontSize: 24, fontWeight: 700 }}>{stats.accounts_count}</div>
               </Col>

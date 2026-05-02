@@ -14,6 +14,8 @@ export interface ModelInfo {
 
 export interface Stats {
   total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
   accounts_count: number;
   avg_latency_ms: number;
   error_count: number;
@@ -30,6 +32,8 @@ export interface Settings {
 export interface AccountStats {
   api_key: string;
   total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
   by_model: { model: string; count: number }[];
   by_endpoint: { endpoint: string; count: number }[];
   avg_latency_ms: number;
@@ -46,6 +50,8 @@ export interface RequestLog {
   status_code: number;
   latency_ms: number;
   error_message: string;
+  input_tokens: number;
+  output_tokens: number;
   created_at: string;
 }
 

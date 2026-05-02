@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
 
 const chatEndpoint = "/api/saas/openai/v1/chat/completions"
@@ -74,11 +75,11 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if req.Stream {
 		h.handleStream(w, &req, client)
 	} else {
-		h.handleNonStream(w, &req, client)
+		h.handleNonStream(w, r, &req, client)
 	}
 }
 
-func (h *Handler) handleNonStream(w http.ResponseWriter, req *MessageRequest, client *joycode.Client) {
+func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *MessageRequest, client *joycode.Client) {
 	jcBody := TranslateRequest(req)
 	const maxRetries = 3
 	var jcResp map[string]interface{}
@@ -117,6 +118,11 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, req *MessageRequest, cl
 		return
 	}
 	resp := TranslateResponse(jcResp, req.Model)
+	if usage, ok := jcResp["usage"].(map[string]interface{}); ok {
+		inTk, _ := usage["prompt_tokens"].(float64)
+		outTk, _ := usage["completion_tokens"].(float64)
+		store.SetTokenUsage(r, int(inTk), int(outTk))
+	}
 	writeAnthropicJSON(w, 200, resp)
 }
 
