@@ -16,6 +16,9 @@ export interface Stats {
   total_requests: number;
   accounts_count: number;
   avg_latency_ms: number;
+  error_count: number;
+  stream_count: number;
+  success_count: number;
   by_model: { model: string; count: number }[];
   by_account: { api_key: string; count: number }[];
 }
@@ -42,6 +45,7 @@ export interface RequestLog {
   stream: boolean;
   status_code: number;
   latency_ms: number;
+  error_message: string;
   created_at: string;
 }
 

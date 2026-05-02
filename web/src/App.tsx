@@ -1,5 +1,5 @@
 import React, { Suspense, lazy } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ConfigProvider, Spin } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import MainLayout from './layouts/MainLayout';
@@ -16,10 +16,11 @@ const App: React.FC = () => (
     <BrowserRouter>
       <Routes>
         <Route element={<MainLayout />}>
-          <Route path="/" element={<Suspense fallback={pageLoading}><Dashboard /></Suspense>} />
+          <Route path="/dashboard" element={<Suspense fallback={pageLoading}><Dashboard /></Suspense>} />
           <Route path="/accounts" element={<Suspense fallback={pageLoading}><Accounts /></Suspense>} />
           <Route path="/accounts/:apiKey" element={<Suspense fallback={pageLoading}><AccountDetail /></Suspense>} />
           <Route path="/settings" element={<Suspense fallback={pageLoading}><Settings /></Suspense>} />
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>
     </BrowserRouter>
