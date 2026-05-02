@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
 
 // ClientResolver returns the appropriate joycode.Client for a request.
@@ -15,11 +16,12 @@ type ClientResolver func(r *http.Request) *joycode.Client
 type Server struct {
 	Client   *joycode.Client
 	Resolver ClientResolver
+	store    *store.Store
 }
 
 // NewServer creates a new OpenAI-compatible proxy server.
-func NewServer(c *joycode.Client) *Server {
-	return &Server{Client: c}
+func NewServer(c *joycode.Client, s *store.Store) *Server {
+	return &Server{Client: c, store: s}
 }
 
 func (s *Server) getClient(r *http.Request) *joycode.Client {

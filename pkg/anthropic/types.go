@@ -119,19 +119,4 @@ type sseMessageStop struct {
 	Type string `json:"type"`
 }
 
-// --- Model mapping: Claude model → JoyCode model ---
 
-// ModelMapping maps Anthropic model names to JoyCode model IDs.
-var ModelMapping = map[string]string{
-	"claude-sonnet-4-20250514":   "JoyAI-Code",
-	"claude-sonnet-4":            "JoyAI-Code",
-	"claude-opus-4-20250514":     "JoyAI-Code",
-	"claude-opus-4":              "JoyAI-Code",
-	"claude-haiku-4-5-20251001":  "GLM-4.7",
-	"claude-haiku-4-5":           "GLM-4.7",
-	"claude-3-5-sonnet-latest":   "JoyAI-Code",
-	"claude-3-5-sonnet-20241022": "JoyAI-Code",
-	"claude-3-5-haiku-latest":    "GLM-4.7",
-	"claude-3-5-haiku-20241022":  "GLM-4.7",
-	"claude-3-haiku-20240307":    "GLM-4.7",
-}

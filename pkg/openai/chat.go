@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
+	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/store"
 )
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -16,29 +17,39 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		slog.Error("decode chat request", "error", err)
-		writeError(w, 400, "invalid JSON")
+		writeError(w, 400, fmt.Sprintf("请求体解析失败: %s。请检查请求是否完整，或尝试开启新对话减少上下文长度。", err.Error()))
 		return
 	}
-	model := DefaultModel(req.Model)
-	jcBody := TranslateRequest(&req)
+	systemDefault := ""
+	if s.store != nil {
+		systemDefault = s.store.GetSetting("default_model")
+	}
+	model := ResolveModel(req.Model, store.GetAccountDefaultModel(r), systemDefault)
+		store.SetModel(r, model)
+		jcBody := TranslateRequest(&req)
 	client := s.getClient(r)
 	if req.Stream {
-		s.handleStreamChat(w, client, jcBody, model)
+		s.handleStreamChat(w, r, client, jcBody, model)
 	} else {
-		s.handleNonStreamChat(w, client, jcBody, model)
+		s.handleNonStreamChat(w, r, client, jcBody, model)
 	}
 }
 
-func (s *Server) handleNonStreamChat(w http.ResponseWriter, client *joycode.Client, jcBody map[string]interface{}, model string) {
+func (s *Server) handleNonStreamChat(w http.ResponseWriter, r *http.Request, client *joycode.Client, jcBody map[string]interface{}, model string) {
 	resp, err := client.Post("/api/saas/openai/v1/chat/completions", jcBody)
 	if err != nil {
 		slog.Error("chat non-stream upstream error", "model", model, "error", err)
 		return
 	}
+	if usage, ok := resp["usage"].(map[string]interface{}); ok {
+		inTk, _ := usage["prompt_tokens"].(float64)
+		outTk, _ := usage["completion_tokens"].(float64)
+		store.SetTokenUsage(r, int(inTk), int(outTk))
+	}
 	writeJSON(w, 200, TranslateResponse(resp, model))
 }
 
-func (s *Server) handleStreamChat(w http.ResponseWriter, client *joycode.Client, jcBody map[string]interface{}, model string) {
+func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, client *joycode.Client, jcBody map[string]interface{}, model string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		slog.Error("streaming not supported by response writer")

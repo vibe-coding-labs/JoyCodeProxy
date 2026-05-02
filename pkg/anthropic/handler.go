@@ -23,11 +23,12 @@ type ClientResolver func(r *http.Request) *joycode.Client
 type Handler struct {
 	Client   *joycode.Client
 	Resolver ClientResolver
+	store    *store.Store
 }
 
 // NewHandler creates a new Anthropic API handler.
-func NewHandler(c *joycode.Client) *Handler {
-	return &Handler{Client: c}
+func NewHandler(c *joycode.Client, s *store.Store) *Handler {
+	return &Handler{Client: c, store: s}
 }
 
 func (h *Handler) getClient(r *http.Request) *joycode.Client {
@@ -58,42 +59,67 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	var req MessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		slog.Error("decode anthropic request", "error", err)
-		writeAnthropicError(w, 400, "invalid JSON: "+err.Error())
+		writeAnthropicError(w, 400, fmt.Sprintf("请求体解析失败: %s。请检查请求是否完整，或尝试开启新对话减少上下文长度。", err.Error()))
 		return
 	}
+	defaultMaxTokens := 8192
+	if h.store != nil {
+		defaultMaxTokens = h.store.GetIntSetting("default_max_tokens", 8192)
+	}
 	if req.MaxTokens <= 0 {
-		req.MaxTokens = 8192
+		req.MaxTokens = defaultMaxTokens
 	}
 	if req.MaxTokens > 32768 {
 		req.MaxTokens = 32768
 	}
 
-	slog.Info("anthropic request", "model", req.Model, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
+		accountDefault := store.GetAccountDefaultModel(r)
+		systemDefault := ""
+		if h.store != nil {
+			systemDefault = h.store.GetSetting("default_model")
+		}
+		resolved := resolveModel(req.Model, accountDefault, systemDefault)
+		store.SetModel(r, resolved)
+		slog.Info("anthropic request", "model", req.Model, "resolved", resolved, "stream", req.Stream, "max_tokens", req.MaxTokens, "messages", len(req.Messages), "tools", len(req.Tools))
 
 	client := h.getClient(r)
 
 	if req.Stream {
-		h.handleStream(w, &req, client)
+		h.handleStream(w, r, &req, client)
 	} else {
 		h.handleNonStream(w, r, &req, client)
 	}
 }
 
 func (h *Handler) handleNonStream(w http.ResponseWriter, r *http.Request, req *MessageRequest, client *joycode.Client) {
-	jcBody := TranslateRequest(req)
-	const maxRetries = 3
+	systemDefault := ""
+	if h.store != nil {
+		systemDefault = h.store.GetSetting("default_model")
+	}
+	// Preemptive truncation: estimate tokens and truncate before sending
+	if rounds := PreemptiveTruncate(req, req.MaxTokens); rounds < 0 {
+		writeAnthropicRequestError(w, "上下文过长，自动截断后仍超出限制，请使用 /compact 或开启新对话。")
+		return
+	} else if rounds > 0 {
+		slog.Warn("preemptive truncation applied (non-stream)", "rounds", rounds)
+	}
+
+	jcBody := TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+	maxRetries := 3
+	if h.store != nil {
+		maxRetries = h.store.GetIntSetting("max_retries", 3)
+	}
 	var jcResp map[string]interface{}
 	var lastErr error
-	truncated := false
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		jcResp, lastErr = client.Post(chatEndpoint, jcBody)
 		if lastErr != nil {
-			if isContextLimitError(lastErr.Error()) && !truncated {
+			if isContextLimitError(lastErr.Error()) {
+				// Progressive truncation on context limit
 				if truncateMessages(req) {
-					truncated = true
-					jcBody = TranslateRequest(req)
-					slog.Warn("retrying with truncated messages (non-stream)")
+					jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+					slog.Warn("retrying with truncated messages (non-stream)", "attempt", attempt)
 					continue
 				}
 				slog.Warn("context limit exceeded, cannot truncate further")
@@ -147,40 +173,53 @@ func (r *prependReader) Close() error {
 	return r.body.Close()
 }
 
-func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, client *joycode.Client) {
+func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, req *MessageRequest, client *joycode.Client) {
+	systemDefault := ""
+	if h.store != nil {
+		systemDefault = h.store.GetSetting("default_model")
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeAnthropicError(w, 500, "streaming not supported")
 		return
 	}
 
-	jcBody := TranslateRequest(req)
+	jcBody := TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
 	jcBody["stream"] = true
 	slog.Debug("stream starting", "model", jcBody["model"], "max_tokens", jcBody["max_tokens"])
 
-	// Connect with retry, auto-truncate on context limit
+	// Preemptive truncation: estimate tokens and truncate before sending
+	if rounds := PreemptiveTruncate(req, req.MaxTokens); rounds < 0 {
+		writeAnthropicRequestError(w, "上下文过长，自动截断后仍超出限制，请使用 /compact 或开启新对话。")
+		return
+	} else if rounds > 0 {
+		slog.Warn("preemptive truncation applied (stream)", "rounds", rounds)
+	}
+
+	jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+	jcBody["stream"] = true
+
+	// Connect with retry, progressive auto-truncate on context limit
 	resp, err := h.connectStreamWithRetry(jcBody, client)
+	for truncRound := 0; err != nil && isContextLimitError(err.Error()) && truncRound < maxTruncationRounds; truncRound++ {
+		slog.Warn("stream context limit, truncating", "round", truncRound+1)
+		if !truncateMessages(req) {
+			break
+		}
+		jcBody = TranslateRequest(req, store.GetAccountDefaultModel(r), systemDefault)
+		jcBody["stream"] = true
+		resp, err = h.connectStreamWithRetry(jcBody, client)
+	}
 	if err != nil {
 		errMsg := err.Error()
 		if isContextLimitError(errMsg) {
-			if truncateMessages(req) {
-				slog.Warn("retrying stream with truncated messages")
-				jcBody = TranslateRequest(req)
-				jcBody["stream"] = true
-				resp, err = h.connectStreamWithRetry(jcBody, client)
-			}
-		}
-		if err != nil {
-			errMsg = err.Error()
-			if isContextLimitError(errMsg) {
-				slog.Warn("context limit exceeded (stream), cannot proceed")
-				writeAnthropicRequestError(w, "上下文长度超出模型限制。请压缩对话历史或开启新对话。原始错误: "+errMsg)
-				return
-			}
-			slog.Error("stream failed after retries", "error", errMsg)
-			writeAnthropicError(w, 500, errMsg)
+			slog.Warn("context limit exceeded (stream), cannot proceed even after progressive truncation")
+			writeAnthropicRequestError(w, "上下文长度超出模型限制，已尝试自动截断但仍无法满足。请压缩对话历史或开启新对话。原始错误: "+errMsg)
 			return
 		}
+		slog.Error("stream failed after retries", "error", errMsg)
+		writeAnthropicError(w, 500, errMsg)
+		return
 	}
 	defer resp.Body.Close()
 
@@ -214,19 +253,29 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, clien
 	currentBlockIndex := 0
 	textBlockStarted := false
 	toolBlockStarted := map[int]bool{}
+	toolBlockToIdx := map[int]int{}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	chunkCount := 0
+	var streamInTk, streamOutTk int
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		chunkCount++
 		chunk := ParseStreamChunk(line)
 		if chunk == nil || len(chunk.Choices) == 0 {
+			if chunk != nil && chunk.Usage != nil {
+				streamInTk = chunk.Usage.PromptTokens
+				streamOutTk = chunk.Usage.CompletionTokens
+			}
 			continue
 		}
 		choice := chunk.Choices[0]
+		if chunk.Usage != nil {
+			streamInTk = chunk.Usage.PromptTokens
+			streamOutTk = chunk.Usage.CompletionTokens
+		}
 
 		for _, tc := range choice.Delta.ToolCalls {
 			idx := tc.Index
@@ -253,6 +302,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, clien
 					textBlockStarted = false
 				}
 				toolBlockStarted[idx] = true
+				toolBlockToIdx[idx] = currentBlockIndex
 				tcID := toolCalls[idx].ID
 				if tcID == "" {
 					tcID = "toolu_" + newID()
@@ -268,6 +318,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, clien
 					},
 				})
 				flusher.Flush()
+				currentBlockIndex++
 			}
 		}
 
@@ -294,6 +345,18 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, clien
 		if choice.FinishReason != nil {
 			fr := *choice.FinishReason
 			slog.Info("stream completed", "chunks", chunkCount, "reason", fr, "tools", len(toolCalls))
+
+			// Ensure at least one content block exists — Anthropic SDK requires it
+			if !textBlockStarted && len(toolBlockStarted) == 0 {
+				textBlockStarted = true
+				FormatSSE(w, "content_block_start", sseContentBlockStart{
+					Type:         "content_block_start",
+					Index:        currentBlockIndex,
+					ContentBlock: ContentBlock{Type: "text", Text: ""},
+				})
+				flusher.Flush()
+			}
+
 			if textBlockStarted {
 				FormatSSE(w, "content_block_stop", sseContentBlockStop{
 					Type: "content_block_stop", Index: currentBlockIndex,
@@ -302,23 +365,30 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, clien
 				textBlockStarted = false
 			}
 			for i := 0; i < len(toolCalls); i++ {
-				tc := toolCalls[i]
 				if toolBlockStarted[i] {
+					args := toolCalls[i].Arguments
+					if args == "" || !json.Valid([]byte(args)) {
+						args = "{}"
+					}
 					FormatSSE(w, "content_block_delta", sseContentBlockDelta{
 						Type:  "content_block_delta",
-						Index: currentBlockIndex,
-						Delta: deltaText{Type: "input_json_delta", PartialJSON: tc.Arguments},
+						Index: toolBlockToIdx[i],
+						Delta: deltaText{Type: "input_json_delta", PartialJSON: args},
 					})
 					FormatSSE(w, "content_block_stop", sseContentBlockStop{
-						Type: "content_block_stop", Index: currentBlockIndex,
+						Type: "content_block_stop", Index: toolBlockToIdx[i],
 					})
-					currentBlockIndex++
 				}
 			}
 
 			stopReason := "end_turn"
-			if fr == "tool_calls" {
+			switch fr {
+			case "tool_calls":
 				stopReason = "tool_use"
+			case "length":
+				stopReason = "max_tokens"
+			case "stop":
+				stopReason = "end_turn"
 			}
 			FormatSSE(w, "message_delta", sseMessageDelta{
 				Type:  "message_delta",
@@ -334,6 +404,17 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, clien
 
 	if err := scanner.Err(); err != nil {
 		slog.Error("stream scanner error", "error", err)
+
+		// Ensure at least one content block exists
+		if !textBlockStarted && len(toolBlockStarted) == 0 {
+			textBlockStarted = true
+			FormatSSE(w, "content_block_start", sseContentBlockStart{
+				Type:         "content_block_start",
+				Index:        currentBlockIndex,
+				ContentBlock: ContentBlock{Type: "text", Text: ""},
+			})
+		}
+
 		if textBlockStarted {
 			FormatSSE(w, "content_block_stop", sseContentBlockStop{
 				Type: "content_block_stop", Index: currentBlockIndex,
@@ -343,9 +424,8 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, clien
 		for i := 0; i < len(toolCalls); i++ {
 			if toolBlockStarted[i] {
 				FormatSSE(w, "content_block_stop", sseContentBlockStop{
-					Type: "content_block_stop", Index: currentBlockIndex,
+					Type: "content_block_stop", Index: toolBlockToIdx[i],
 				})
-				currentBlockIndex++
 			}
 		}
 		FormatSSE(w, "message_delta", sseMessageDelta{
@@ -358,12 +438,18 @@ func (h *Handler) handleStream(w http.ResponseWriter, req *MessageRequest, clien
 		FormatSSE(w, "message_stop", sseMessageStop{Type: "message_stop"})
 		flusher.Flush()
 	}
+	if streamInTk > 0 || streamOutTk > 0 {
+		store.SetTokenUsage(r, streamInTk, streamOutTk)
+	}
 }
 
 // connectStreamWithRetry attempts to connect to upstream with retries.
 // Peeks at the first SSE line to detect errors before returning the response.
 func (h *Handler) connectStreamWithRetry(jcBody map[string]interface{}, client *joycode.Client) (*http.Response, error) {
-	const maxRetries = 3
+	maxRetries := 3
+	if h.store != nil {
+		maxRetries = h.store.GetIntSetting("max_retries", 3)
+	}
 	var lastErr error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {

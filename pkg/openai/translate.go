@@ -100,10 +100,20 @@ func newShortID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano()%1e12)
 }
 
-// DefaultModel returns the model name, defaulting to JoyAI-Code.
-func DefaultModel(model string) string {
-	if model == "" {
-		return joycode.DefaultModel
+// ResolveModel returns the model to use for the request.
+// If the client-specified model is a known JoyCode model, pass it through.
+// Otherwise fall back to the account's default model, then the global default.
+func ResolveModel(model string, accountDefault string, systemDefault string) string {
+	for _, m := range joycode.Models {
+		if m == model {
+			return model
+		}
 	}
-	return model
+	if accountDefault != "" {
+		return accountDefault
+	}
+	if systemDefault != "" {
+		return systemDefault
+	}
+	return joycode.DefaultModel
 }

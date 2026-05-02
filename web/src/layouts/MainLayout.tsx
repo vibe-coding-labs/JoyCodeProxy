@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Layout, Menu, Typography, theme, Tag } from 'antd';
+import { Layout, Menu, Typography, Tag, theme, Tooltip } from 'antd';
 import {
   DashboardOutlined,
   TeamOutlined,
   SettingOutlined,
   CheckCircleOutlined,
+  GithubOutlined,
+  StarFilled,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import useDocumentTitle from '../hooks/useDocumentTitle';
@@ -28,12 +30,14 @@ const MainLayout: React.FC = () => {
 
   const [healthStatus, setHealthStatus] = useState<'ok' | 'error'>('ok');
   const [accountCount, setAccountCount] = useState(0);
+  const [stars, setStars] = useState<number | null>(null);
 
   useEffect(() => {
     api.getHealth().then((h) => {
       setHealthStatus(h.status === 'ok' ? 'ok' : 'error');
       setAccountCount(h.accounts);
     }).catch(() => setHealthStatus('error'));
+    api.getGitHubStars().then((s) => { if (s > 0) setStars(s); }).catch(() => {});
   }, []);
 
   const selectedKey = location.pathname.startsWith('/accounts') ? '/accounts'
@@ -80,9 +84,23 @@ const MainLayout: React.FC = () => {
             </Tag>
             <Text type="secondary">{accountCount} 个账号在线</Text>
           </div>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            代理地址：localhost:34891
-          </Text>
+          <Tooltip title="去 GitHub Star 支持我们">
+            <a
+              href="https://github.com/vibe-coding-labs/JoyCodeProxy"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, color: token.colorTextSecondary, fontSize: 13, textDecoration: 'none' }}
+            >
+              <GithubOutlined style={{ fontSize: 18 }} />
+              GitHub
+              {stars !== null && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, marginLeft: 2 }}>
+                  <StarFilled style={{ fontSize: 13, color: '#faad14' }} />
+                  <span style={{ fontSize: 12 }}>{stars.toLocaleString()}</span>
+                </span>
+              )}
+            </a>
+          </Tooltip>
         </Header>
         <Content style={{ margin: 24 }}>
           <Outlet />

@@ -67,7 +67,7 @@ var serveCmd = &cobra.Command{
 		if s != nil {
 			accounts, _ := s.ListAccounts()
 			if len(accounts) > 0 {
-				if n, err := s.ReassignLogs([]string{"", "joycode"}, accounts[0].APIKey); err == nil && n > 0 {
+				if n, err := s.ReassignLogs([]string{"", "joycode", "default"}, accounts[0].APIKey); err == nil && n > 0 {
 					log.Printf("Migrated %d request logs to account %q", n, accounts[0].APIKey)
 				}
 			}
@@ -76,11 +76,36 @@ var serveCmd = &cobra.Command{
 			log.Printf("Migrated %d token-based request logs to account api_keys", n)
 		}
 
-		srv := openai.NewServer(client)
-		anth := anthropic.NewHandler(client)
+		srv := openai.NewServer(client, s)
+		anth := anthropic.NewHandler(client, s)
 
 		// Per-request client resolution from database accounts
 		if s != nil {
+			// Shared transport for connection pooling and limits
+			sharedTransport := &http.Transport{
+				MaxIdleConnsPerHost: 10,
+				MaxConnsPerHost:     20,
+				IdleConnTimeout:     90 * time.Second,
+			}
+
+			// Background goroutine to sync max_connections setting
+			go func() {
+				ticker := time.NewTicker(10 * time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					maxConns := s.GetIntSetting("max_connections", 20)
+					if maxConns < 1 {
+						maxConns = 1
+					}
+					sharedTransport.MaxConnsPerHost = maxConns
+					idle := maxConns / 2
+					if idle < 2 {
+						idle = 2
+					}
+					sharedTransport.MaxIdleConnsPerHost = idle
+				}
+			}()
+
 			resolver := func(r *http.Request) *joycode.Client {
 				apiKey := r.Header.Get("x-api-key")
 				if apiKey == "" {
@@ -89,22 +114,47 @@ var serveCmd = &cobra.Command{
 						apiKey = strings.TrimPrefix(auth, "Bearer ")
 					}
 				}
+				timeout := s.GetIntSetting("request_timeout", 120)
+				if timeout < 60 {
+					timeout = 60
+				}
 				if apiKey != "" {
 					if account, _ := s.GetAccountByToken(apiKey); account != nil {
-						return joycode.NewClient(account.PtKey, account.UserID)
+						cl := joycode.NewClient(account.PtKey, account.UserID)
+						cl.SetTimeout(time.Duration(timeout) * time.Second)
+						return cl
 					}
 					if account, _ := s.GetAccount(apiKey); account != nil {
-						return joycode.NewClient(account.PtKey, account.UserID)
+						cl := joycode.NewClient(account.PtKey, account.UserID)
+						cl.SetTimeout(time.Duration(timeout) * time.Second)
+						return cl
 					}
 				}
 				if account, _ := s.GetDefaultAccount(); account != nil {
-					return joycode.NewClient(account.PtKey, account.UserID)
+					cl := joycode.NewClient(account.PtKey, account.UserID)
+					cl.SetTimeout(time.Duration(timeout) * time.Second)
+					cl.SetTransport(sharedTransport)
+					return cl
 				}
 				return client
 			}
 			srv.Resolver = resolver
 			anth.Resolver = resolver
 		}
+
+		// Background log cleanup goroutine
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			if days := s.GetIntSetting("log_retention_days", 30); days > 0 {
+				s.CleanupOldLogs(days)
+			}
+			for range ticker.C {
+				if days := s.GetIntSetting("log_retention_days", 30); days > 0 {
+					s.CleanupOldLogs(days)
+				}
+			}
+		}()
 
 		mux := http.NewServeMux()
 		srv.RegisterRoutes(mux)
@@ -199,11 +249,39 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		r = store.InitTokenUsage(r)
+		r = store.InitModel(r)
+		r = store.InitAccountModel(r)
+
+		// Resolve account default model for handlers
+		if s != nil {
+			ak := r.Header.Get("x-api-key")
+			if ak == "" {
+				if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+					ak = strings.TrimPrefix(auth, "Bearer ")
+				}
+			}
+			var acc *store.Account
+			if ak != "" {
+				if a, _ := s.GetAccountByToken(ak); a != nil {
+					acc = a
+				} else if a, _ := s.GetAccount(ak); a != nil {
+					acc = a
+				}
+			}
+			if acc == nil {
+				if a, _ := s.GetDefaultAccount(); a != nil {
+					acc = a
+				}
+			}
+			if acc != nil {
+				store.SetAccountDefaultModel(r, acc.DefaultModel)
+			}
+		}
 
 		// Peek at body to extract model before handler consumes it
 		var model string
 		if r.Method == "POST" && r.Body != nil {
-			bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 100<<20))
 			r.Body.Close()
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			var body map[string]interface{}
@@ -259,7 +337,13 @@ func requestLogMiddleware(next http.Handler, s *store.Store) http.Handler {
 
 			var inTk, outTk int
 			inTk, outTk = store.GetTokenUsage(r)
-			go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency, errMsg, inTk, outTk)
+			resolvedModel := store.GetModel(r)
+				if resolvedModel != "" {
+					model = resolvedModel
+				}
+				if s.GetSetting("enable_request_logging") != "false" {
+					go s.LogRequest(apiKey, model, path, isStream, rw.statusCode, latency, errMsg, inTk, outTk)
+				}
 		}
 	})
 }

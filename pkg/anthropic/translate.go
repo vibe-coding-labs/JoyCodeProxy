@@ -11,8 +11,8 @@ import (
 )
 
 // TranslateRequest converts an Anthropic MessageRequest to a JoyCode API body.
-func TranslateRequest(req *MessageRequest) map[string]interface{} {
-	model := resolveModel(req.Model)
+func TranslateRequest(req *MessageRequest, accountDefault string, systemDefault string) map[string]interface{} {
+	model := resolveModel(req.Model, accountDefault, systemDefault)
 	messages := buildMessages(req)
 
 	body := map[string]interface{}{
@@ -32,6 +32,11 @@ func TranslateRequest(req *MessageRequest) map[string]interface{} {
 	}
 	if len(req.Tools) > 0 {
 		body["tools"] = convertToolsToOpenAI(req.Tools)
+	}
+	if len(req.ToolChoice) > 0 {
+		if tc := convertToolChoice(req.ToolChoice); tc != nil {
+			body["tool_choice"] = tc
+		}
 	}
 	return body
 }
@@ -85,6 +90,9 @@ func TranslateResponse(jcResp map[string]interface{}, reqModel string) *MessageR
 			if id == "" {
 				id = "toolu_" + newID()
 			}
+			if argsStr == "" || !json.Valid([]byte(argsStr)) {
+				argsStr = "{}"
+			}
 
 			var input json.RawMessage = json.RawMessage(argsStr)
 			content = append(content, ContentBlock{
@@ -110,14 +118,17 @@ func TranslateResponse(jcResp map[string]interface{}, reqModel string) *MessageR
 	}
 }
 
-func resolveModel(model string) string {
-	if m, ok := ModelMapping[model]; ok {
-		return m
-	}
+func resolveModel(model string, accountDefault string, systemDefault string) string {
 	for _, m := range joycode.Models {
 		if m == model {
 			return model
 		}
+	}
+	if accountDefault != "" {
+		return accountDefault
+	}
+	if systemDefault != "" {
+		return systemDefault
 	}
 	return joycode.DefaultModel
 }
@@ -145,34 +156,51 @@ func buildMessages(req *MessageRequest) []map[string]interface{} {
 			})
 		}
 	}
+
+	// Collect all tool_use IDs from assistant messages so we can strip orphaned tool_results
+	toolUseIDs := map[string]bool{}
 	for _, m := range req.Messages {
-		converted := convertMessage(m.Role, m.Content)
-		msgs = append(msgs, converted)
+		if m.Role == "assistant" {
+			var blocks []contentBlock
+			if json.Unmarshal(m.Content, &blocks) == nil {
+				for _, b := range blocks {
+					if b.Type == "tool_use" && b.ID != "" {
+						toolUseIDs[b.ID] = true
+					}
+				}
+			}
+		}
+	}
+
+	for _, m := range req.Messages {
+		for _, converted := range convertMessage(m.Role, m.Content, toolUseIDs) {
+			msgs = append(msgs, converted)
+		}
 	}
 	return msgs
 }
 
-// convertMessage converts a single Anthropic message to OpenAI format.
-func convertMessage(role string, raw json.RawMessage) map[string]interface{} {
+// convertMessage converts a single Anthropic message to one or more OpenAI format messages.
+func convertMessage(role string, raw json.RawMessage, toolUseIDs map[string]bool) []map[string]interface{} {
 	// Try simple string content first
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return map[string]interface{}{"role": role, "content": s}
+		return []map[string]interface{}{{"role": role, "content": s}}
 	}
 
 	// Try as content blocks
 	var blocks []contentBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return map[string]interface{}{"role": role, "content": string(raw)}
+		return []map[string]interface{}{{"role": role, "content": string(raw)}}
 	}
 
 	switch role {
 	case "assistant":
-		return convertAssistantBlocks(blocks)
+		return []map[string]interface{}{convertAssistantBlocks(blocks)}
 	case "user":
-		return convertUserBlocks(blocks)
+		return convertUserBlocks(blocks, toolUseIDs)
 	default:
-		return map[string]interface{}{"role": role, "content": extractText(blocks)}
+		return []map[string]interface{}{{"role": role, "content": extractText(blocks)}}
 	}
 }
 
@@ -219,40 +247,44 @@ func convertAssistantBlocks(blocks []contentBlock) map[string]interface{} {
 }
 
 // convertUserBlocks handles user messages that may contain tool_result blocks.
-// tool_result blocks must be converted to separate "tool" role messages in OpenAI format.
-func convertUserBlocks(blocks []contentBlock) map[string]interface{} {
-	// If all blocks are text, keep as single user message
-	textParts := []string{}
-	hasToolResult := false
-	for _, b := range blocks {
-		if b.Type == "tool_result" {
-			hasToolResult = true
-			break
-		}
-		if b.Type == "text" {
-			textParts = append(textParts, b.Text)
-		}
-	}
+// tool_result blocks are converted to separate "tool" role messages in OpenAI format.
+// Orphaned tool_results (whose tool_use was removed by truncation) are stripped.
+func convertUserBlocks(blocks []contentBlock, toolUseIDs map[string]bool) []map[string]interface{} {
+	var result []map[string]interface{}
+	var textParts []string
 
-	if !hasToolResult {
-		return map[string]interface{}{"role": "user", "content": strings.Join(textParts, "\n")}
-	}
-
-	// Mix of text and tool_result — return a special marker.
-	// The caller must handle this by expanding into multiple messages.
-	// For simplicity, we serialize tool_results into text format.
-	// This is a limitation but handles the common case.
-	parts := []string{}
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
-			parts = append(parts, b.Text)
+			textParts = append(textParts, b.Text)
 		case "tool_result":
+			// Skip orphaned tool_results whose tool_use was removed by truncation
+			if b.ToolUseID != "" && !toolUseIDs[b.ToolUseID] {
+				continue
+			}
+			// Convert each tool_result to an OpenAI "tool" role message
 			resultText := extractToolResultContent(b.Content)
-			parts = append(parts, fmt.Sprintf("[Tool Result (%s)]: %s", b.ToolUseID, resultText))
+			result = append(result, map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": b.ToolUseID,
+				"content":      resultText,
+			})
 		}
 	}
-	return map[string]interface{}{"role": "user", "content": strings.Join(parts, "\n")}
+
+	// If there's remaining text, add it as a user message after tool results
+	if len(textParts) > 0 && len(result) > 0 {
+		result = append(result, map[string]interface{}{
+			"role": "user", "content": strings.Join(textParts, "\n"),
+		})
+	}
+
+	// If no tool_result blocks, return as single user message
+	if len(result) == 0 {
+		return []map[string]interface{}{{"role": "user", "content": strings.Join(textParts, "\n")}}
+	}
+
+	return result
 }
 
 func extractToolResultContent(raw json.RawMessage) string {
@@ -336,6 +368,35 @@ func newID() string {
 
 func strPtr(s string) *string { return &s }
 
+// convertToolChoice converts Anthropic tool_choice to OpenAI format.
+func convertToolChoice(raw json.RawMessage) interface{} {
+	var tc struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &tc); err != nil {
+		return nil
+	}
+	switch tc.Type {
+	case "auto":
+		return "auto"
+	case "any":
+		return "required"
+	case "none":
+		return "none"
+	case "tool":
+		if tc.Name != "" {
+			return map[string]interface{}{
+				"type": "function",
+				"function": map[string]string{"name": tc.Name},
+			}
+		}
+		return "auto"
+	default:
+		return nil
+	}
+}
+
 // NewMessageID generates a message ID in Anthropic format.
 func NewMessageID() string {
 	return "msg_" + newID()
@@ -358,6 +419,10 @@ type StreamChunk struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 // ParseStreamChunk parses a single SSE data line into a StreamChunk.

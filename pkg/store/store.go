@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -75,11 +76,27 @@ type AccountStats struct {
 	AvgLatencyMs  float64         `json:"avg_latency_ms"`
 	StreamCount   int             `json:"stream_count"`
 	ErrorCount    int             `json:"error_count"`
+	AllTime       *AllTimeTotals  `json:"all_time"`
 }
 
 type EndpointCount struct {
 	Endpoint string `json:"endpoint"`
 	Count    int    `json:"count"`
+}
+
+type AllTimeTotals struct {
+	TotalRequests int `json:"total_requests"`
+	TotalInputTk  int `json:"total_input_tokens"`
+	TotalOutputTk int `json:"total_output_tokens"`
+	ErrorCount    int `json:"error_count"`
+}
+
+type HourlyData struct {
+	Hour        string `json:"hour"`
+	Count       int    `json:"count"`
+	InputTokens int    `json:"input_tokens"`
+	OutputTokens int   `json:"output_tokens"`
+	Errors      int    `json:"errors"`
 }
 
 type RequestLog struct {
@@ -528,6 +545,24 @@ func (s *Store) GetSettings() (map[string]string, error) {
 	return m, rows.Err()
 }
 
+func (s *Store) GetSetting(key string) string {
+	var val string
+	s.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&val)
+	return val
+}
+
+func (s *Store) GetIntSetting(key string, defaultVal int) int {
+	v := s.GetSetting(key)
+	if v == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return defaultVal
+	}
+	return n
+}
+
 func (s *Store) SetSetting(key, value string) error {
 	_, err := s.db.Exec(
 		"INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'))",
@@ -578,7 +613,7 @@ func (s *Store) LogRequest(apiKey, model, endpoint string, stream bool, statusCo
 
 func (s *Store) GetStats() (*Stats, error) {
 	stats := &Stats{}
-	tf := "created_at >= datetime('now', '-24 hours')"
+	tf := "created_at >= datetime('now', 'localtime', '-24 hours')"
 
 	err := s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE "+tf).Scan(&stats.TotalRequests)
 	if err != nil {
@@ -639,17 +674,53 @@ func (s *Store) GetStats() (*Stats, error) {
 	return stats, nil
 }
 
+func (s *Store) GetAllTimeTotals() (*AllTimeTotals, error) {
+	t := &AllTimeTotals{}
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs").Scan(&t.TotalRequests)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs").Scan(&t.TotalInputTk)
+	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs").Scan(&t.TotalOutputTk)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE status_code >= 400").Scan(&t.ErrorCount)
+	return t, nil
+}
+
+func (s *Store) GetHourlyStats() ([]HourlyData, error) {
+	rows, err := s.db.Query(`
+		SELECT strftime('%H', created_at) as hour,
+			COUNT(*) as count,
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END)
+		FROM request_logs
+		WHERE created_at >= datetime('now', 'localtime', '-24 hours')
+		GROUP BY hour ORDER BY hour`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []HourlyData
+	for rows.Next() {
+		var h HourlyData
+		if err := rows.Scan(&h.Hour, &h.Count, &h.InputTokens, &h.OutputTokens, &h.Errors); err != nil {
+			return nil, err
+		}
+		result = append(result, h)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 	as := &AccountStats{APIKey: apiKey}
+	tf := "created_at >= datetime('now', 'localtime', '-24 hours')"
 
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ?", apiKey).Scan(&as.TotalRequests)
-	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&as.AvgLatencyMs)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND stream = 1", apiKey).Scan(&as.StreamCount)
-	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400", apiKey).Scan(&as.ErrorCount)
-	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&as.TotalInputTk)
-	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&as.TotalOutputTk)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.TotalRequests)
+	s.db.QueryRow("SELECT COALESCE(AVG(latency_ms), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.AvgLatencyMs)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND stream = 1 AND "+tf, apiKey).Scan(&as.StreamCount)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400 AND "+tf, apiKey).Scan(&as.ErrorCount)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.TotalInputTk)
+	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ? AND "+tf, apiKey).Scan(&as.TotalOutputTk)
 
-	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE api_key = ? GROUP BY model ORDER BY cnt DESC", apiKey)
+	rows, err := s.db.Query("SELECT model, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+tf+" GROUP BY model ORDER BY cnt DESC", apiKey)
 	if err != nil {
 		return nil, err
 	}
@@ -662,7 +733,7 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 		as.ByModel = append(as.ByModel, mc)
 	}
 
-	rows2, err := s.db.Query("SELECT endpoint, COUNT(*) as cnt FROM request_logs WHERE api_key = ? GROUP BY endpoint ORDER BY cnt DESC", apiKey)
+	rows2, err := s.db.Query("SELECT endpoint, COUNT(*) as cnt FROM request_logs WHERE api_key = ? AND "+tf+" GROUP BY endpoint ORDER BY cnt DESC", apiKey)
 	if err != nil {
 		return nil, err
 	}
@@ -674,6 +745,14 @@ func (s *Store) GetAccountStats(apiKey string) (*AccountStats, error) {
 		}
 		as.ByEndpoint = append(as.ByEndpoint, ec)
 	}
+
+	// All-time totals
+	allTime := &AllTimeTotals{}
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ?", apiKey).Scan(&allTime.TotalRequests)
+	s.db.QueryRow("SELECT COALESCE(SUM(input_tokens), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&allTime.TotalInputTk)
+	s.db.QueryRow("SELECT COALESCE(SUM(output_tokens), 0) FROM request_logs WHERE api_key = ?", apiKey).Scan(&allTime.TotalOutputTk)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ? AND status_code >= 400", apiKey).Scan(&allTime.ErrorCount)
+	as.AllTime = allTime
 
 	return as, nil
 }
@@ -763,6 +842,26 @@ func (s *Store) GetRecentErrors(limit int) ([]RequestLog, error) {
 	}
 	return logs, nil
 }
+// CleanupOldLogs deletes request logs older than the specified number of days.
+func (s *Store) CleanupOldLogs(days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	result, err := s.db.Exec(
+		"DELETE FROM request_logs WHERE created_at < datetime('now', 'localtime', '-' || ? || ' days')",
+		days,
+	)
+	if err != nil {
+		slog.Error("store: cleanup old logs failed", "days", days, "error", err)
+		return 0, err
+	}
+	affected, _ := result.RowsAffected()
+	if affected > 0 {
+		slog.Info("store: cleaned up old logs", "days", days, "deleted", affected)
+	}
+	return affected, nil
+}
+
 // MigrateTokenLogs reassigns request_logs stored under api_token values to the account's api_key.
 func (s *Store) MigrateTokenLogs() (int64, error) {
 	result, err := s.db.Exec(`

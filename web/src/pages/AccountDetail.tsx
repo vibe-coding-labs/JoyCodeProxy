@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
   Card, Row, Col, Statistic, Typography, Spin, Tag, Select, Button,
-  message, Space, Table, Badge, Segmented, Popconfirm,
+  message, Space, Table, Badge, Segmented, Popconfirm, Tooltip,
 } from 'antd';
 import {
   ArrowLeftOutlined, ApiOutlined, ThunderboltOutlined,
   CheckCircleOutlined, WarningOutlined, ReloadOutlined,
   ClockCircleOutlined, GlobalOutlined, FireOutlined, CopyOutlined,
-  DeleteOutlined,
+  DeleteOutlined, QuestionCircleOutlined, InfoCircleOutlined,
 } from '@ant-design/icons';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip,
@@ -31,12 +31,18 @@ const BUILTIN_MODELS = [
   { label: 'Doubao-Seed-2.0-pro', value: 'Doubao-Seed-2.0-pro' },
 ];
 
-const PIE_COLORS = ['#1677ff', '#52c41a', '#faad14', '#ff4d4f', '#722ed1', '#13c2c2', '#eb2f96', '#fa8c16'];
+const PIE_COLORS = ['#00b578', '#36cfc9', '#73d13d', '#95de64', '#1890ff', '#13c2c2', '#eb2f96', '#fa8c16'];
 
 const latencyColor = (ms: number) => {
   if (ms < 500) return '#52c41a';
   if (ms < 1500) return '#faad14';
   return '#ff4d4f';
+};
+
+const fmtTokens = (n: number) => {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return n.toLocaleString();
 };
 
 const statusTag = (code: number) => {
@@ -47,7 +53,20 @@ const statusTag = (code: number) => {
 
 const formatTime = (t: string) => {
   if (!t) return '-';
-  return t.replace('T', ' ').slice(0, 19);
+  const d = new Date(t + (t.includes('Z') || t.includes('+') ? '' : 'Z'));
+  if (isNaN(d.getTime())) return t;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
+const formatLatency = (ms: number) => {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.floor(ms / 1000);
+  const remainMs = ms % 1000;
+  if (s < 60) return `${s}s${remainMs > 0 ? ` ${remainMs}ms` : ''}`;
+  const m = Math.floor(s / 60);
+  const remainS = s % 60;
+  return `${m}m${remainS > 0 ? ` ${remainS}s` : ''}`;
 };
 
 const getBaseURL = () => `http://${window.location.host}`;
@@ -210,6 +229,30 @@ const AccountDetail: React.FC = () => {
       render: (code: number) => statusTag(code),
     },
     {
+      title: '输入',
+      dataIndex: 'input_tokens',
+      key: 'input',
+      width: 80,
+      sorter: (a: RequestLog, b: RequestLog) => a.input_tokens - b.input_tokens,
+      render: (n: number) => (
+        <Typography.Text style={{ fontSize: 12, fontFamily: 'monospace' }}>
+          {n > 0 ? fmtTokens(n) : '-'}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: '输出',
+      dataIndex: 'output_tokens',
+      key: 'output',
+      width: 80,
+      sorter: (a: RequestLog, b: RequestLog) => a.output_tokens - b.output_tokens,
+      render: (n: number) => (
+        <Typography.Text style={{ fontSize: 12, fontFamily: 'monospace' }}>
+          {n > 0 ? fmtTokens(n) : '-'}
+        </Typography.Text>
+      ),
+    },
+    {
       title: '延迟',
       dataIndex: 'latency_ms',
       key: 'latency',
@@ -217,7 +260,7 @@ const AccountDetail: React.FC = () => {
       sorter: (a: RequestLog, b: RequestLog) => a.latency_ms - b.latency_ms,
       render: (ms: number) => (
         <Typography.Text style={{ color: latencyColor(ms), fontFamily: 'monospace', fontWeight: 500 }}>
-          {ms}ms
+          {formatLatency(ms)}
         </Typography.Text>
       ),
     },
@@ -247,6 +290,9 @@ const AccountDetail: React.FC = () => {
           </div>
         </div>
         <Space>
+          <Tooltip title="此模型的用途仅限生成下方的快速启动命令。实际请求中的模型由客户端指定（如 ANTHROPIC_MODEL 环境变量），始终优先于本设置。模型列表来自 JoyCode API 支持的模型 + 服务器动态获取的扩展模型。">
+            <QuestionCircleOutlined style={{ color: '#999', cursor: 'help' }} />
+          </Tooltip>
           <Select
             style={{ width: 220 }}
             value={account.default_model || undefined}
@@ -292,9 +338,16 @@ const AccountDetail: React.FC = () => {
 
       {/* Quick start commands */}
       <Card size="small" style={{ marginBottom: 16 }}>
-        <Typography.Text strong style={{ display: 'block', marginBottom: 10, fontSize: 13 }}>
-          快速启动命令
-        </Typography.Text>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <Typography.Text strong style={{ fontSize: 13 }}>
+            快速启动命令
+          </Typography.Text>
+          <Tooltip title="模型优先级：客户端指定的模型（如启动命令中的 ANTHROPIC_MODEL）始终优先。上方设置的「默认模型」仅用于生成这些命令中的模型参数。如果你手动修改了启动命令中的模型，以你手动指定的为准。">
+            <Typography.Text style={{ fontSize: 12, color: '#999', cursor: 'help' }}>
+              <InfoCircleOutlined /> 模型优先级说明
+            </Typography.Text>
+          </Tooltip>
+        </div>
         <Row gutter={[16, 12]}>
           <Col xs={24} md={12}>
             <div style={{
@@ -353,35 +406,44 @@ const AccountDetail: React.FC = () => {
           <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
-                title={<span style={{ fontSize: 12 }}>总请求</span>}
+                title={<span style={{ fontSize: 12 }}>请求 <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
                 value={stats.total_requests}
                 prefix={<ApiOutlined />}
                 valueStyle={{ fontSize: 20 }}
               />
+              {stats.all_time && (
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {stats.all_time.total_requests.toLocaleString()}</Typography.Text>
+              )}
             </Card>
           </Col>
           <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
-                title={<span style={{ fontSize: 12 }}>输入 Token</span>}
-                value={(stats.total_input_tokens || 0).toLocaleString()}
+                title={<span style={{ fontSize: 12 }}>输入 Token <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
+                value={fmtTokens(stats.total_input_tokens || 0)}
                 valueStyle={{ fontSize: 20 }}
               />
+              {stats.all_time && (
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {fmtTokens(stats.all_time.total_input_tokens)}</Typography.Text>
+              )}
             </Card>
           </Col>
           <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
-                title={<span style={{ fontSize: 12 }}>输出 Token</span>}
-                value={(stats.total_output_tokens || 0).toLocaleString()}
+                title={<span style={{ fontSize: 12 }}>输出 Token <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
+                value={fmtTokens(stats.total_output_tokens || 0)}
                 valueStyle={{ fontSize: 20 }}
               />
+              {stats.all_time && (
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {fmtTokens(stats.all_time.total_output_tokens)}</Typography.Text>
+              )}
             </Card>
           </Col>
           <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
-                title={<span style={{ fontSize: 12 }}>平均延迟</span>}
+                title={<span style={{ fontSize: 12 }}>平均延迟 <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
                 value={Math.round(stats.avg_latency_ms)}
                 suffix="ms"
                 prefix={<ThunderboltOutlined />}
@@ -392,7 +454,7 @@ const AccountDetail: React.FC = () => {
           <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
-                title={<span style={{ fontSize: 12 }}>成功率</span>}
+                title={<span style={{ fontSize: 12 }}>成功率 <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
                 value={successRate}
                 suffix="%"
                 prefix={<CheckCircleOutlined />}
@@ -403,11 +465,14 @@ const AccountDetail: React.FC = () => {
           <Col xs={8} sm={4}>
             <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
               <Statistic
-                title={<span style={{ fontSize: 12 }}>错误</span>}
+                title={<span style={{ fontSize: 12 }}>错误 <span style={{ color: '#999', fontWeight: 400 }}>(24h)</span></span>}
                 value={stats.error_count}
                 prefix={<WarningOutlined />}
                 valueStyle={{ fontSize: 20, color: stats.error_count > 0 ? '#ff4d4f' : undefined }}
               />
+              {stats.all_time && stats.all_time.error_count > 0 && (
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>累计 {stats.all_time.error_count}</Typography.Text>
+              )}
             </Card>
           </Col>
         </Row>
@@ -425,7 +490,7 @@ const AccountDetail: React.FC = () => {
                     <XAxis type="number" />
                     <YAxis dataKey="model" type="category" width={100} tick={{ fontSize: 11 }} />
                     <RTooltip />
-                    <Bar dataKey="count" name="请求数" fill="#1677ff" radius={[0, 4, 4, 0]} />
+                    <Bar dataKey="count" name="请求数" fill="#00b578" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </Card>
@@ -488,7 +553,7 @@ const AccountDetail: React.FC = () => {
           rowKey="id"
           size="small"
           pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
-          scroll={{ x: 740 }}
+          scroll={{ x: 900 }}
           locale={{ emptyText: '暂无请求记录' }}
           expandable={{
             rowExpandable: (record) => record.status_code >= 400 && !!record.error_message,

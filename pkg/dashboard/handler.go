@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/auth"
 	"github.com/vibe-coding-labs/JoyCodeProxy/pkg/joycode"
@@ -40,6 +42,78 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/settings", h.handleSettings)
 	mux.HandleFunc("/api/health", h.handleHealth)
 	mux.HandleFunc("/api/errors", h.handleErrors)
+	mux.HandleFunc("/api/github-stars", h.handleGitHubStars)
+}
+
+// GitHub Stars cache
+var (
+	ghStarsCache     int
+	ghStarsCacheTime time.Time
+	ghStarsMu        sync.Mutex
+)
+
+const ghStarsCacheTTL = 1 * time.Hour
+const ghRepo = "vibe-coding-labs/JoyCodeProxy"
+
+func (h *Handler) handleGitHubStars(w http.ResponseWriter, r *http.Request) {
+	setCors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	ghStarsMu.Lock()
+	if ghStarsCache > 0 && time.Since(ghStarsCacheTime) < ghStarsCacheTTL {
+		stars := ghStarsCache
+		ghStarsMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]interface{}{"stars": stars})
+		return
+	}
+	ghStarsMu.Unlock()
+
+	resp, err := http.Get("https://api.github.com/repos/" + ghRepo)
+	if err != nil {
+		slog.Warn("github stars fetch failed", "error", err)
+		ghStarsMu.Lock()
+		stars := ghStarsCache
+		ghStarsMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]interface{}{"stars": stars})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		slog.Warn("github stars non-200", "status", resp.StatusCode)
+		ghStarsMu.Lock()
+		stars := ghStarsCache
+		ghStarsMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]interface{}{"stars": stars})
+		return
+	}
+
+	var result struct {
+		StargazersCount int `json:"stargazers_count"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		slog.Warn("github stars decode failed", "error", err)
+		ghStarsMu.Lock()
+		stars := ghStarsCache
+		ghStarsMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]interface{}{"stars": stars})
+		return
+	}
+
+	ghStarsMu.Lock()
+	ghStarsCache = result.StargazersCount
+	ghStarsCacheTime = time.Now()
+	stars := ghStarsCache
+	ghStarsMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"stars": stars})
 }
 
 // --- Errors Handler ---
@@ -327,6 +401,7 @@ func (h *Handler) handleQRLoginStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if status != "confirmed" {
+		slog.Debug("qr-login poll", "session", sessionID, "status", status)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status": status,
 		})
@@ -348,8 +423,14 @@ func (h *Handler) handleQRLoginStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.AddAccount(apiKey, result.PtKey, result.UserID, isDefault, "GLM-5.1"); err != nil {
-		slog.Error("qr-login save account", "api_key", apiKey, "error", err)
-		writeError(w, http.StatusInternalServerError, "保存账号失败: "+err.Error())
+		slog.Error("qr-login save account failed", "api_key", apiKey, "error", err)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":  "confirmed",
+			"ok":      false,
+			"api_key": apiKey,
+			"user_id": result.UserID,
+			"message": "登录成功但保存账号失败: " + err.Error(),
+		})
 		return
 	}
 
@@ -585,7 +666,28 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 	if stats.ByAccount == nil {
 		stats.ByAccount = []store.AccountCount{}
 	}
-	writeJSON(w, http.StatusOK, stats)
+
+	totals, _ := h.store.GetAllTimeTotals()
+	hourly, _ := h.store.GetHourlyStats()
+	if hourly == nil {
+		hourly = []store.HourlyData{}
+	}
+
+	resp := map[string]interface{}{
+		"total_requests":       stats.TotalRequests,
+		"total_input_tokens":   stats.TotalInputTk,
+		"total_output_tokens":  stats.TotalOutputTk,
+		"accounts_count":       stats.AccountsCount,
+		"avg_latency_ms":       stats.AvgLatencyMs,
+		"error_count":          stats.ErrorCount,
+		"stream_count":         stats.StreamCount,
+		"success_count":        stats.SuccessCount,
+		"by_model":             stats.ByModel,
+		"by_account":           stats.ByAccount,
+		"all_time":             totals,
+		"hourly":               hourly,
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // --- Settings Handler ---

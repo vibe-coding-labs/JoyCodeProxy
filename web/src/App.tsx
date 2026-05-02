@@ -12,7 +12,7 @@ const Settings = lazy(() => import('./pages/Settings'));
 const pageLoading = <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
 
 const App: React.FC = () => (
-  <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: '#1677ff' } }}>
+  <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: '#00b578' } }}>
     <BrowserRouter>
       <Routes>
         <Route element={<MainLayout />}>

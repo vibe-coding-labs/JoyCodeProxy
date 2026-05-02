@@ -258,6 +258,12 @@ const Accounts: React.FC = () => {
         <Space>
           <Button onClick={fetchAccounts} icon={<ReloadOutlined />}>刷新</Button>
           <Button
+            onClick={() => setQrModalOpen(true)}
+            icon={<SafetyCertificateOutlined />}
+          >
+            扫码登录
+          </Button>
+          <Button
             type="primary"
             onClick={handleAutoLogin}
             loading={autoLogging}
@@ -265,18 +271,11 @@ const Accounts: React.FC = () => {
           >
             一键登录
           </Button>
-          <Button
-            onClick={() => setQrModalOpen(true)}
-            icon={<SafetyCertificateOutlined />}
-          >
-            扫码登录
-          </Button>
           <Button onClick={() => setModalOpen(true)} icon={<PlusOutlined />}>
             手动添加
           </Button>
         </Space>
       </div>
-
       <Alert
         type="info"
         showIcon

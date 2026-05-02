@@ -11,11 +11,16 @@ interface QRLoginModalProps {
 
 const QRLoginModal: React.FC<QRLoginModalProps> = ({ open, onClose, onSuccess }) => {
   const [qrImage, setQrImage] = useState('');
-  const [sessionId, setSessionId] = useState('');
   const [status, setStatus] = useState<'loading' | 'waiting' | 'scanned' | 'confirmed' | 'expired' | 'error'>('loading');
   const [countdown, setCountdown] = useState(180);
   const [errorMsg, setErrorMsg] = useState('');
-  const pollRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const sessionIdRef = useRef('');
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const onSuccessRef = useRef(onSuccess);
+  const onCloseRef = useRef(onClose);
+
+  onSuccessRef.current = onSuccess;
+  onCloseRef.current = onClose;
 
   const initQR = useCallback(async () => {
     setStatus('loading');
@@ -24,7 +29,7 @@ const QRLoginModal: React.FC<QRLoginModalProps> = ({ open, onClose, onSuccess })
     try {
       const result = await api.qrLoginInit();
       setQrImage(result.qr_image);
-      setSessionId(result.session_id);
+      sessionIdRef.current = result.session_id;
       setStatus('waiting');
     } catch (e: unknown) {
       setStatus('error');
@@ -37,23 +42,29 @@ const QRLoginModal: React.FC<QRLoginModalProps> = ({ open, onClose, onSuccess })
       initQR();
     } else {
       setQrImage('');
-      setSessionId('');
+      sessionIdRef.current = '';
       setStatus('loading');
-      if (pollRef.current) clearTimeout(pollRef.current);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     }
   }, [open, initQR]);
 
   useEffect(() => {
-    if (!open || !sessionId || status === 'confirmed' || status === 'expired' || status === 'error' || status === 'loading') {
-      return;
-    }
+    if (!open) return;
 
     const poll = async () => {
+      const sid = sessionIdRef.current;
+      if (!sid) {
+        pollTimerRef.current = setTimeout(poll, 1000);
+        return;
+      }
       try {
-        const result = await api.qrLoginStatus(sessionId);
+        const result = await api.qrLoginStatus(sid);
         if (result.status === 'confirmed') {
           setStatus('confirmed');
-          setTimeout(() => { onSuccess(); onClose(); }, 1500);
+          setTimeout(() => {
+            onSuccessRef.current();
+            onCloseRef.current();
+          }, 1500);
           return;
         }
         if (result.status === 'expired') {
@@ -71,12 +82,12 @@ const QRLoginModal: React.FC<QRLoginModalProps> = ({ open, onClose, onSuccess })
       } catch {
         // Continue polling on network error
       }
-      pollRef.current = setTimeout(poll, 3000);
+      pollTimerRef.current = setTimeout(poll, 3000);
     };
 
-    pollRef.current = setTimeout(poll, 2000);
-    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
-  }, [open, sessionId, status, onSuccess, onClose]);
+    pollTimerRef.current = setTimeout(poll, 2000);
+    return () => { if (pollTimerRef.current) clearTimeout(pollTimerRef.current); };
+  }, [open]);
 
   useEffect(() => {
     if (!open || status === 'confirmed' || status === 'expired' || status === 'loading') return;

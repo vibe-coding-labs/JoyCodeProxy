@@ -13,8 +13,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/skip2/go-qrcode"
 )
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 const (
 	qrShowURL   = "https://qr.m.jd.com/show?appid=133&size=147&t=%d"
@@ -55,11 +61,16 @@ func QRInit() (sessionID, qrImageBase64 string, err error) {
 	reqURL := fmt.Sprintf(qrShowURL, time.Now().UnixMilli())
 	req, _ := http.NewRequest("GET", reqURL, nil)
 	req.Header.Set("User-Agent", jdUserAgent)
+	req.Header.Set("Referer", "https://passport.jd.com/new/login.aspx")
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("request QR code: %w", err)
 	}
+	pngData, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		return "", "", fmt.Errorf("read QR image: %w", err)
+	}
 
 	var token string
 	for _, c := range client.Jar.Cookies(&url.URL{Scheme: "https", Host: "qr.m.jd.com"}) {
@@ -73,11 +84,6 @@ func QRInit() (sessionID, qrImageBase64 string, err error) {
 	}
 
 	sessionID = fmt.Sprintf("qr_%d", time.Now().UnixNano())
-	qrURL := fmt.Sprintf("https://plogin.jd.com/cgi-bin/ml/islogin?type=qr&appid=133&t=%s", token)
-	png, err := qrcode.Encode(qrURL, qrcode.Medium, 256)
-	if err != nil {
-		return "", "", fmt.Errorf("generate QR code: %w", err)
-	}
 
 	qrSessionsMu.Lock()
 	qrSessions[sessionID] = &QRSession{
@@ -86,7 +92,7 @@ func QRInit() (sessionID, qrImageBase64 string, err error) {
 	}
 	qrSessionsMu.Unlock()
 
-	return sessionID, base64.StdEncoding.EncodeToString(png), nil
+	return sessionID, base64.StdEncoding.EncodeToString(pngData), nil
 }
 
 // QRPollStatus checks the scan status of a QR login session.
@@ -106,8 +112,10 @@ func QRPollStatus(sessionID string) (status string, result *QRLoginResult, err e
 	reqURL := fmt.Sprintf(qrCheckURL, url.QueryEscape(session.Token), time.Now().UnixMilli())
 	req, _ := http.NewRequest("GET", reqURL, nil)
 	req.Header.Set("User-Agent", jdUserAgent)
+	req.Header.Set("Referer", "https://passport.jd.com/new/login.aspx")
 	resp, err := session.client.Do(req)
 	if err != nil {
+		slog.Error("qr-check request failed", "session", sessionID, "error", err)
 		return "error", nil, err
 	}
 	body, _ := io.ReadAll(resp.Body)
@@ -117,6 +125,7 @@ func QRPollStatus(sessionID string) (status string, result *QRLoginResult, err e
 	start := strings.Index(str, "(")
 	end := strings.LastIndex(str, ")")
 	if start < 0 || end < 0 {
+		slog.Warn("qr-check response not JSONP", "session", sessionID, "body", str[:minInt(len(str), 200)])
 		return "waiting", nil, nil
 	}
 
@@ -125,18 +134,24 @@ func QRPollStatus(sessionID string) (status string, result *QRLoginResult, err e
 		Ticket string `json:"ticket,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(str[start+1:end]), &check); err != nil {
+		slog.Warn("qr-check JSONP parse failed", "session", sessionID, "payload", str[start+1:end])
 		return "waiting", nil, nil
 	}
+
+	slog.Debug("qr-check result", "session", sessionID, "code", check.Code, "has_ticket", check.Ticket != "")
 
 	switch check.Code {
 	case 200:
 		if check.Ticket == "" {
+			slog.Error("qr-check code 200 but empty ticket", "session", sessionID)
 			return "error", nil, fmt.Errorf("ticket is empty")
 		}
 		loginResult, err := validateAndFetchInfo(session.client, check.Ticket)
 		if err != nil {
+			slog.Error("qr-validate failed", "session", sessionID, "error", err)
 			return "error", nil, err
 		}
+		slog.Info("qr-login confirmed", "session", sessionID, "user_id", loginResult.UserID, "real_name", loginResult.RealName)
 		QRCleanup(sessionID)
 		return "confirmed", loginResult, nil
 	case 201:
@@ -144,10 +159,20 @@ func QRPollStatus(sessionID string) (status string, result *QRLoginResult, err e
 	case 202:
 		return "scanned", nil, nil
 	case 203, 204:
+		slog.Info("qr-code expired", "session", sessionID, "code", check.Code)
 		QRCleanup(sessionID)
 		return "expired", nil, nil
+	case 205:
+		slog.Info("qr-login canceled by user", "session", sessionID)
+		QRCleanup(sessionID)
+		return "expired", nil, nil
+	case 257:
+		slog.Error("qr-check parameter error", "session", sessionID, "msg", check.Ticket)
+		QRCleanup(sessionID)
+		return "error", nil, fmt.Errorf("JD 服务端参数异常 (code 257)")
 	default:
-		return "waiting", nil, nil
+		slog.Warn("qr-check unknown code", "session", sessionID, "code", check.Code)
+		return "error", nil, fmt.Errorf("未知状态码: %d", check.Code)
 	}
 }
 

@@ -366,9 +366,9 @@ func TestSetSettingOverwrite(t *testing.T) {
 func TestLogRequestAndGetStats(t *testing.T) {
 	s := openTestStore(t)
 
-	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 200, 500, "")
-	s.LogRequest("key1", "GLM-5.1", "/v1/chat/completions", false, 200, 300, "")
-	s.LogRequest("key2", "JoyAI-Code", "/v1/messages", true, 200, 400, "")
+	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 200, 500, "", 0, 0)
+	s.LogRequest("key1", "GLM-5.1", "/v1/chat/completions", false, 200, 300, "", 0, 0)
+	s.LogRequest("key2", "JoyAI-Code", "/v1/messages", true, 200, 400, "", 0, 0)
 
 	stats, err := s.GetStats()
 	if err != nil {
@@ -403,9 +403,9 @@ func TestGetStatsEmpty(t *testing.T) {
 func TestGetAccountStats(t *testing.T) {
 	s := openTestStore(t)
 
-	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 200, 500, "")
-	s.LogRequest("key1", "GLM-5.1", "/v1/messages", false, 200, 300, "")
-	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 500, 100, "")
+	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 200, 500, "", 0, 0)
+	s.LogRequest("key1", "GLM-5.1", "/v1/messages", false, 200, 300, "", 0, 0)
+	s.LogRequest("key1", "JoyAI-Code", "/v1/chat/completions", true, 500, 100, "", 0, 0)
 
 	stats, err := s.GetAccountStats("key1")
 	if err != nil {
@@ -443,9 +443,9 @@ func TestGetAccountStatsEmpty(t *testing.T) {
 func TestGetRecentLogs(t *testing.T) {
 	s := openTestStore(t)
 
-	s.LogRequest("key1", "model1", "/v1/test", true, 200, 100, "")
-	s.LogRequest("key2", "model2", "/v1/test", false, 200, 200, "")
-	s.LogRequest("key1", "model3", "/v1/test", true, 200, 300, "")
+	s.LogRequest("key1", "model1", "/v1/test", true, 200, 100, "", 0, 0)
+	s.LogRequest("key2", "model2", "/v1/test", false, 200, 200, "", 0, 0)
+	s.LogRequest("key1", "model3", "/v1/test", true, 200, 300, "", 0, 0)
 
 	logs, err := s.GetRecentLogs(2)
 	if err != nil {
@@ -463,8 +463,8 @@ func TestGetRecentLogs(t *testing.T) {
 func TestGetRecentLogsDefault(t *testing.T) {
 	s := openTestStore(t)
 
-	s.LogRequest("key1", "m1", "/v1", true, 200, 100, "")
-	s.LogRequest("key1", "m2", "/v1", true, 200, 100, "")
+	s.LogRequest("key1", "m1", "/v1", true, 200, 100, "", 0, 0)
+	s.LogRequest("key1", "m2", "/v1", true, 200, 100, "", 0, 0)
 
 	logs, err := s.GetRecentLogs(0)
 	if err != nil {

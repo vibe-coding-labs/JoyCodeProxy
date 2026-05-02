@@ -54,6 +54,14 @@ func (c *Client) SetHTTPClient(hc *http.Client) {
 	c.httpClient = hc
 }
 
+func (c *Client) SetTimeout(d time.Duration) {
+	c.httpClient.Timeout = d
+}
+
+func (c *Client) SetTransport(transport http.RoundTripper) {
+	c.httpClient.Transport = transport
+}
+
 func newHexID() string {
 	b := make([]byte, 16)
 	rand.Read(b)

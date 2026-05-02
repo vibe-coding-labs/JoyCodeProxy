@@ -23,6 +23,19 @@ export interface Stats {
   success_count: number;
   by_model: { model: string; count: number }[];
   by_account: { api_key: string; count: number }[];
+  all_time: {
+    total_requests: number;
+    total_input_tokens: number;
+    total_output_tokens: number;
+    error_count: number;
+  };
+  hourly: {
+    hour: string;
+    count: number;
+    input_tokens: number;
+    output_tokens: number;
+    errors: number;
+  }[];
 }
 
 export interface Settings {
@@ -39,6 +52,12 @@ export interface AccountStats {
   avg_latency_ms: number;
   stream_count: number;
   error_count: number;
+  all_time?: {
+    total_requests: number;
+    total_input_tokens: number;
+    total_output_tokens: number;
+    error_count: number;
+  };
 }
 
 export interface RequestLog {
@@ -104,4 +123,6 @@ export const api = {
     request<{ status: string; ok?: boolean; api_key?: string; user_id?: string; real_name?: string; message?: string }>(`/api/qr-login/status?session=${encodeURIComponent(sessionId)}`),
   getRecentErrors: (limit = 50) =>
     request<{ errors: RequestLog[]; total: number }>(`/api/errors?limit=${limit}`),
+  getGitHubStars: () =>
+    request<{ stars: number }>('/api/github-stars').then(r => r.stars),
 };
